@@ -107,6 +107,22 @@ python3 -c "import socket;s=socket.socket();s.settimeout(4);s.connect(('<lan-ip>
 
 A listener on localhost proves nothing about the firewall or the LAN path.
 
+## 5b. Playing nicely with other services
+
+The capture loop is the only real CPU consumer (the ffmpeg remux is under 1%).
+On a shared box, cap it rather than letting it compete:
+
+```ini
+[Service]
+Nice=10
+CPUQuota=80%
+```
+
+Measured on an S905X-class TV box with one viewer, `--mode fmp4`: ~28% of one
+core after the poll throttle. If you see substantially more, something is
+polling the camera faster than it delivers frames — check before assuming the
+box is too slow.
+
 ## 6. Run it as a service (optional)
 
 ```ini

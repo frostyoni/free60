@@ -628,3 +628,31 @@ Confirmed against hardware through the web server's idle path:
 
 and the next `/frame.jpg` returned a valid 64 KB frame immediately after.
 `madv.py sleep` uses the same two commands (`7A 01 02` then `7A 00 02`).
+
+### CPU cost, and why the capture loop was the bill (measured 2026-11-19)
+
+On the H616 box (S905X-class), with one viewer attached and `--mode fmp4`:
+
+| what | share of one core |
+|---|---|
+| python capture loop, before any tuning | **~81%** |
+| ... after throttling the poll to the frame rate | **~28%** |
+| ffmpeg remux (`-c:v copy`) | **0.9%** |
+
+Profiling the loop directly was the only way to find it. For a **32 fps**
+stream it was issuing **368 `get_frame()` calls per second**, ~90% of them
+answering `busy`, at **2.6 ms each** — 99% of wall time inside the calls. The
+poll rate, not the data, was the cost.
+
+Two fixes, in order of effect:
+
+1. a 2 ms pause when a poll came back empty (stopped a pure busy-spin)
+2. pause half an observed frame interval (EMA) when empty, clamped 4-20 ms —
+   at 30 fps that is ~15 ms between polls instead of 2 ms
+
+Raising the bulk read from 16 KiB to 64 KiB made **no measurable difference**
+(50% -> 52%, i.e. noise), so transfer count was never the problem. Worth
+recording so nobody optimises it again.
+
+For a box that does other work, the unit also carries `Nice=10` and
+`CPUQuota=80%` so the camera can never starve its neighbours.
