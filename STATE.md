@@ -668,7 +668,9 @@ On the H616 box (S905X-class), with one viewer attached and `--mode fmp4`:
 | what | share of one core |
 |---|---|
 | python capture loop, before any tuning | **~81%** |
-| ... after throttling the poll to the frame rate | **~28%** |
+| ... after stopping the busy-spin | ~50% |
+| ... after throttling the poll to the frame rate | ~28% |
+| ... after reusing the USB read buffer, and waiting between frames | **~17%** |
 | ffmpeg remux (`-c:v copy`) | **0.9%** |
 
 Profiling the loop directly was the only way to find it. For a **32 fps**
@@ -676,11 +678,18 @@ stream it was issuing **368 `get_frame()` calls per second**, ~90% of them
 answering `busy`, at **2.6 ms each** — 99% of wall time inside the calls. The
 poll rate, not the data, was the cost.
 
-Two fixes, in order of effect:
+Four fixes, in order of effect:
 
 1. a 2 ms pause when a poll came back empty (stopped a pure busy-spin)
 2. pause half an observed frame interval (EMA) when empty, clamped 4-20 ms —
    at 30 fps that is ~15 ms between polls instead of 2 ms
+3. reuse one preallocated buffer for every bulk read. pyusb allocates a fresh
+   array per `read()` when given a size; passing an array makes it return a
+   byte count instead. This was worth more than the poll rate: profiling with
+   `process_time` showed **2.24 ms of CPU per call**, i.e. the cost was ours,
+   not USB latency
+4. wait ~60% of the frame interval after a good frame, so the next poll lands
+   on a frame instead of bouncing off `busy` first
 
 Raising the bulk read from 16 KiB to 64 KiB made **no measurable difference**
 (50% -> 52%, i.e. noise), so transfer count was never the problem. Worth

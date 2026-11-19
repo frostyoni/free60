@@ -118,10 +118,11 @@ Nice=10
 CPUQuota=80%
 ```
 
-Measured on an S905X-class TV box with one viewer, `--mode fmp4`: ~28% of one
-core after the poll throttle. If you see substantially more, something is
+Measured on an S905X-class TV box with one viewer, `--mode fmp4`: **~17% of one
+core**, with ffmpeg under 1%. If you see substantially more, something is
 polling the camera faster than it delivers frames — check before assuming the
-box is too slow.
+box is too slow. An earlier build sat at 81% purely because of a busy poll
+loop.
 
 ## 6. Run it as a service (optional)
 

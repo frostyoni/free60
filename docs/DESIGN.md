@@ -51,10 +51,13 @@ is exactly what makes a port cheap if anyone wants one.
 Being straight about the costs:
 
 **The capture loop is the CPU cost.** Measured on an H616: ffmpeg's copy remux
-took **3.1% of one core**, while the Python capture path took **~81%** — before
-the busy-spin fix. The per-command overhead (build CBW, write, N bulk reads,
-parse CSW, per frame at 30 fps) is pure interpreter cost. Rust would plausibly
-cut that by 5-10x.
+takes **0.9% of one core**, while the Python capture path started at **~81%**.
+Four fixes — stopping a busy-spin, polling at the frame rate rather than 11x it,
+reusing the USB read buffer instead of allocating 64 KiB per transfer, and
+waiting between frames — brought it to **~17%**. The remaining cost is still
+interpreter overhead per USB round trip, and Rust would plausibly cut that by
+5-10x. But 17% of one core, with `CPUQuota=80%` on top, is not a problem worth
+a rewrite.
 
 **Distribution to normal humans is worse.** `pip install pyusb` plus a WinUSB
 driver bind via Zadig is not a friendly install. A signed binary would be.
@@ -62,6 +65,14 @@ driver bind via Zadig is not a friendly install. A signed binary would be.
 **If this ever becomes a product or a kernel driver, rewrite it.** A V4L2
 module, or something multiple applications depend on, wants Rust or C for
 reasons that have nothing to do with this project's current shape.
+
+## On Rust specifically
+
+I don't know anything about Rust except that I like using apps built in it.
+This isn't an app — it's an **unblocker for the world**. The job is to make one
+abandoned camera work for anyone who owns one, on hardware they already have,
+with code they can read. A compiler toolchain and per-architecture binaries work
+against all three of those things.
 
 ## The trigger to rewrite
 
