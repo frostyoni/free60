@@ -437,3 +437,37 @@ Two levels, both confirmed to be accepted (`00`):
 `tools/madv.py sleep` does stop-live-view + close-session, and `tools/madv-web.py`
 does it automatically after `--idle-timeout` seconds with no viewer. Do not
 leave a unit streaming with nobody watching.
+
+### Zero-transcode streaming (`--mode webcodecs`)
+
+The camera already emits H.264, so re-encoding it to MJPEG is wasted work —
+and on a cheap SBC it is the whole CPU cost. `tools/madv-web.py --mode webcodecs`
+skips ffmpeg entirely:
+
+- the capture thread publishes each access unit to subscriber queues
+- `GET /stream.h264` relays them as `[u32 LE length][annex-B access unit]`
+  over HTTP chunked encoding
+- the page feeds them to a **WebCodecs `VideoDecoder`**
+  (`avc1.640028`, `avc:{format:'annexb'}`, derived from the SPS:
+  profile `0x64`, constraints `0x00`, level `0x28`) and samples the decoded
+  canvas straight into the same 360 shader
+
+Server CPU drops to "copy bytes". Requires a browser with WebCodecs
+(Chrome/Edge 94+, Safari 16.4+, Firefox 130+); fall back to `--mode mjpeg`
+otherwise.
+
+Verified offline: the muxing path and codec string were checked against a
+captured stream, and the server/page start cleanly in this mode. **Not yet
+verified end-to-end against a live camera.**
+
+### Still capture wedges the unit (open)
+
+On the current unit, `7A 01 05` + poll used to complete in ~1 s. After the
+camera was moved onto a USB extension lead, the same sequence hangs and the
+camera stops answering entirely — it stays enumerated (`464a:4d02` still in
+`lsusb`) but every command times out, and only a physical replug recovers it.
+
+Leading hypothesis is **under-voltage during the capture current spike**
+(see the power note in the README), not a protocol error: the exact same
+commands worked on a direct port. Needs a controlled test — direct port,
+then powered hub — before the still-download protocol work continues.

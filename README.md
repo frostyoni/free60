@@ -50,10 +50,16 @@ Working, verified against real hardware:
 - ✅ thumbnail download (272×272 JPEG)
 - ✅ still capture trigger (completes in ~1 s)
 - ✅ browser demo with a drag-to-look 360° viewer
+- ✅ zero-transcode mode (`--mode webcodecs`): server relays H.264, the browser
+  decodes it. Not yet run against hardware.
 
 Open:
 
-- ⬜ full-resolution still download (`7A 05 02` still answers "busy")
+- ⬜ full-resolution still download (`7A 05 02` still answers "busy"). Worse,
+  on the current unit a still capture now **wedges the camera** part-way
+  through — it stays on the bus but stops answering and only a replug clears
+  it. This started after the unit was moved onto a USB extension lead, so
+  under-voltage is the leading suspect, not the protocol.
 - ⬜ video recording (`7A 01 03`) — command accepted, untested end-to-end
 - ⬜ firmware reflash path — we hold the exact image and the recovered
   protocol, but the `.prm` patch step is not reimplemented and nothing has
@@ -61,10 +67,47 @@ Open:
 
 ---
 
+## Requirements
+
+Any Linux box with a **free USB host port**. That is the only hard constraint —
+the camera is tether-only (no Wi-Fi, no Bluetooth, no battery), so it has to be
+physically plugged into the machine running this.
+
+| Need | Why | Notes |
+|---|---|---|
+| Python 3.8+ | the driver | distro `python3-usb` is enough; no venv required |
+| `libusb-1.0` | USB access | vendor-class device, no kernel driver binds it |
+| udev rule | unprivileged access | `tools/60-madv-mini.rules` |
+| `ffmpeg` | **only** for the MJPEG web demo | `--mode webcodecs` needs no ffmpeg at all |
+
+No compiler, no kernel module, no GPU, no bootloader work. x86_64, arm64 and
+armv7 all work — the driver is pure Python over libusb.
+
+## Power and heat (read before trusting a port)
+
+The camera's USB descriptors claim **Self Powered** and `bMaxPower = 100 mA`.
+Do not believe them. There is **no battery**, and while live view is open the
+ISP and the H.264 encoder run flat out.
+
+**Actual current draw has not been measured** — that needs inline measurement
+hardware this project does not have — but it is plainly well above 100 mA in
+use, and the unit gets noticeably warm within minutes of streaming.
+
+Practical consequences:
+
+- Prefer a **direct port** on the host. Unpowered hubs, cheap USB extension
+  leads and long cables are the usual source of trouble.
+- The failure mode is misleading. Under-volted, the camera still enumerates,
+  still acknowledges commands, but never produces a frame — or wedges part-way
+  through a command. A brownout looks exactly like a firmware bug.
+- If `probe` and `info` work but `live` stays silent, suspect power before you
+  suspect code.
+- It has no battery and no soft power switch, so **unplugging is the only hard
+  reset** and the only way to fully discharge it.
+
 ## Quick start
 
-Requires Linux, `ffmpeg`, and Python 3. The camera needs unprivileged USB
-access via the included udev rule.
+The camera needs unprivileged USB access via the included udev rule.
 
 ```bash
 # 1. let your user talk to the camera
@@ -87,8 +130,18 @@ ffplay live.h264
 
 ```bash
 ./.venv/bin/python tools/madv-web.py --port 8901 --bind <your-lan-ip>
-# then open http://<your-lan-ip>:8901/
+# or, on a weak box, with no transcoding at all:
+./.venv/bin/python tools/madv-web.py --port 8901 --bind <your-lan-ip> --mode webcodecs
 ```
+
+Two modes:
+
+| Mode | What runs | Cost |
+|---|---|---|
+| `mjpeg` (default) | server transcodes to MJPEG (`ffmpeg`) | works in any browser; the encode is the CPU cost |
+| `webcodecs` | server relays the camera's own H.264, **browser decodes** | near-zero server CPU, no ffmpeg needed; needs a modern browser |
+
+The camera already emits H.264, so `webcodecs` is the right choice on an SBC.
 
 Drag to look around, scroll/pinch to zoom, double-click to reset. There is also
 a "flat panorama" tab showing the raw 2:1 equirectangular frame.

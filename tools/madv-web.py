@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -34,7 +35,11 @@ import madv
 # capture: USB -> ffmpeg -> latest MJPEG frame
 # =======================================================================
 class Capture:
-    def __init__(self, scale_width=1920, quality=5, idle_timeout=60):
+    def __init__(self, scale_width=1920, quality=5, idle_timeout=60,
+                 mode="mjpeg"):
+        self.mode = mode              # 'mjpeg' or 'webcodecs'
+        self.subs = []                # queues for raw H.264 relays
+        self.subs_lock = threading.Lock()
         self.scale_width = scale_width
         self.idle_timeout = idle_timeout
         self.quality = quality
@@ -59,6 +64,23 @@ class Capture:
     def start(self):
         self.thread.start()
         return self
+
+    def subscribe(self):
+        q = deque(maxlen=120)
+        with self.subs_lock:
+            self.subs.append(q)
+        return q
+
+    def unsubscribe(self, q):
+        with self.subs_lock:
+            if q in self.subs:
+                self.subs.remove(q)
+
+    def publish(self, au):
+        with self.subs_lock:
+            subs = list(self.subs)
+        for q in subs:
+            q.append(au)
 
     # -- the ffmpeg encoder (H.264 in on stdin, JPEGs out on stdout) --
     def _spawn_ffmpeg(self):
@@ -134,9 +156,14 @@ class Capture:
         print(f"[capture] fw={self.info.get('fw_version')} start_stream={st}",
               flush=True)
         self.error = None
-        ff = self._spawn_ffmpeg()
-        reader = threading.Thread(target=self._read_jpegs, args=(ff,), daemon=True)
-        reader.start()
+        ff = None
+        if self.mode == "mjpeg":
+            ff = self._spawn_ffmpeg()
+            threading.Thread(target=self._read_jpegs, args=(ff,),
+                             daemon=True).start()
+        else:
+            print("[capture] mode=webcodecs: relaying access units, "
+                  "no transcoding", flush=True)
 
         t_fps = time.time()
         frames_at = 0
@@ -177,11 +204,14 @@ class Capture:
                 except Exception:
                     fr = None            # transient; keep going
                 if fr and fr["data"]:
-                    try:
-                        ff.stdin.write(fr["data"])
-                        ff.stdin.flush()
-                    except (BrokenPipeError, OSError):
-                        break
+                    if ff is not None:
+                        try:
+                            ff.stdin.write(fr["data"])
+                            ff.stdin.flush()
+                        except (BrokenPipeError, OSError):
+                            break
+                    else:
+                        self.publish(fr["data"])
                 now = time.time()
                 if now - t_fps >= 2.0:
                     self.fps = (self.frames - frames_at) / (now - t_fps)
@@ -189,10 +219,11 @@ class Capture:
                     t_fps = now
         finally:
             self.running_to_restart = True
-            try:
-                ff.kill()
-            except Exception:
-                pass
+            if ff is not None:
+                try:
+                    ff.kill()
+                except Exception:
+                    pass
             try:
                 cam.stop_liveview()
                 cam.close_session()
@@ -281,6 +312,8 @@ PAGE = r"""<!doctype html>
 <div id="stage">
   <canvas id="gl"></canvas>
   <img id="flat" src="/stream.mjpg" alt="panorama">
+  <canvas id="flatwc" style="display:none;width:100%;height:100%;object-fit:contain;background:#000"></canvas>
+  <canvas id="wc" style="display:none"></canvas>
   <div id="hud">drag to look &middot; scroll / pinch to zoom &middot; double-click to reset</div>
 </div>
 
@@ -300,7 +333,11 @@ let mode = '360';
 $('tab_360').onclick = () => { mode='360'; $('tab_360').classList.add('on'); $('tab_flat').classList.remove('on');
   $('gl').style.display='block'; $('flat').style.display='none'; };
 $('tab_flat').onclick = () => { mode='flat'; $('tab_flat').classList.add('on'); $('tab_360').classList.remove('on');
-  $('flat').style.display='block'; $('gl').style.display='none'; };
+  $('gl').style.display='none';
+  const wc = (srcMode==='webcodecs');
+  $('flat').style.display   = wc?'none':'block';
+  $('flatwc').style.display = wc?'block':'none';
+  if(wc){ flatwc.width=wcCanvas.width||1; flatwc.height=wcCanvas.height||1; } };
 
 $('shutter').onclick = async () => {
   const b=$('shutter'); const t=b.textContent; b.textContent='Capturing...';
@@ -438,10 +475,73 @@ canvas.addEventListener('touchmove', e=>{
 canvas.addEventListener('touchend', ()=>{ pinch=null; });
 
 const img=new Image();
-let ready=false, busy=false;
+let ready=false, busy=false, srcMode='mjpeg';
 img.onload = ()=>{ ready=true; busy=false; };
 img.onerror = ()=>{ busy=false; };
-function grab(){ if(mode!=='360'||busy) return; busy=true; img.src='/frame.jpg?t='+Date.now(); }
+function grab(){ if(srcMode!=='mjpeg'||mode!=='360'||busy) return; busy=true; img.src='/frame.jpg?t='+Date.now(); }
+
+// ---- WebCodecs path: the camera already sends H.264, so let the browser decode it ----
+const wcCanvas=document.getElementById('wc');
+const wcCtx=wcCanvas.getContext('2d',{willReadFrequently:false});
+const flatwc=document.getElementById('flatwc');
+const flatwcCtx=flatwc.getContext('2d');
+let decoder=null, CODEC='avc1.640028';
+
+function isKeyFrame(au){
+  for(let i=0;i+4<au.length;i++){
+    if(au[i]===0&&au[i+1]===0&&au[i+2]===0&&au[i+3]===1){
+      if((au[i+4]&0x1f)===5) return true; i+=4;
+    } else if(au[i]===0&&au[i+1]===0&&au[i+2]===1){
+      if((au[i+3]&0x1f)===5) return true; i+=3;
+    }
+  }
+  return false;
+}
+
+async function startWebCodecs(){
+  const j = await (await fetch('/api/info')).json();
+  srcMode = j.mode || 'mjpeg';
+  CODEC = j.codec || CODEC;
+  if(srcMode!=='webcodecs') return;
+  if(!('VideoDecoder' in window)){
+    console.warn('WebCodecs unavailable - restart the server with --mode mjpeg');
+    return;
+  }
+  decoder=new VideoDecoder({
+    output: f => {
+      if(wcCanvas.width!==f.displayWidth){ wcCanvas.width=f.displayWidth; wcCanvas.height=f.displayHeight; }
+      wcCtx.drawImage(f,0,0);
+      ready=true;
+      if(mode==='flat'){ flatwc.width=wcCanvas.width; flatwc.height=wcCanvas.height;
+                         flatwcCtx.drawImage(wcCanvas,0,0); }
+      f.close();
+    },
+    error: e => console.error('VideoDecoder error', e)
+  });
+  decoder.configure({codec:CODEC, avc:{format:'annexb'}, optimizeForLatency:true});
+  pumpH264();
+}
+
+async function pumpH264(){
+  const res=await fetch('/stream.h264');
+  const reader=res.body.getReader();
+  let buf=new Uint8Array(0), ts=0;
+  while(true){
+    const {done,value}=await reader.read();
+    if(done) break;
+    const nb=new Uint8Array(buf.length+value.length); nb.set(buf); nb.set(value,buf.length); buf=nb;
+    while(buf.length>=4){
+      const len=new DataView(buf.buffer,buf.byteOffset).getUint32(0,true);
+      if(buf.length < 4+len) break;
+      const au=buf.slice(4,4+len);
+      buf=buf.slice(4+len);
+      try{
+        decoder.decode(new EncodedVideoChunk({
+          type: isKeyFrame(au)?'key':'delta', timestamp:(ts+=33333), data:au }));
+      }catch(e){ /* not configured yet - drop */ }
+    }
+  }
+}
 
 let last=performance.now();
 function draw(now){
@@ -465,7 +565,8 @@ function draw(now){
   if(canvas.width!==w||canvas.height!==h){ canvas.width=w; canvas.height=h; }
   gl.viewport(0,0,w,h);
   gl.bindTexture(gl.TEXTURE_2D,tex);
-  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,img);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,
+                srcMode==='webcodecs'?wcCanvas:img);
   gl.uniform2f(uRes,w,h);
   gl.uniform1f(uYaw,yaw);
   gl.uniform1f(uPitch,pitch);
@@ -473,6 +574,7 @@ function draw(now){
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 }
 requestAnimationFrame(draw);
+startWebCodecs().catch(e=>console.warn('webcodecs init failed', e));
 </script></body></html>"""
 
 
@@ -505,6 +607,8 @@ class Handler(BaseHTTPRequestHandler):
                 "fw_version": cap.info.get("fw_version"),
                 "hw_version": cap.info.get("hw_version"),
                 "fps": round(cap.fps, 1),
+                "mode": cap.mode,
+                "codec": "avc1.640028",
                 "frames": cap.frames,
                 "error": cap.error,
             }).encode()
@@ -563,6 +667,37 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 return
+        if path == "/stream.h264":
+            cap.last_request = time.time()
+            q = cap.subscribe()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+
+            def chunk(data):
+                self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+
+            try:
+                import struct as _s
+                while True:
+                    if not q:
+                        time.sleep(0.004)
+                        if not self.running_hint():
+                            break
+                        continue
+                    au = q.popleft()
+                    chunk(_s.pack("<I", len(au)) + au)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                cap.unsubscribe(q)
+            return
+
         if path == "/thumb.jpg":
             t = cap.latest_thumb
             if not t:
@@ -570,6 +705,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "image/jpeg", t)
 
         return self._send(404, "text/plain", b"not found")
+
+    def running_hint(self):
+        return True
 
     def do_POST(self):
         path = self.path.split("?")[0]
@@ -591,17 +729,21 @@ def main():
     ap.add_argument("--scale", type=int, default=1920,
                     help="downscale width for the web preview (0 = native)")
     ap.add_argument("--quality", type=int, default=5)
+    ap.add_argument("--mode", choices=["mjpeg", "webcodecs"], default="mjpeg",
+                    help="mjpeg: server transcodes, plays in any browser. "
+                         "webcodecs: relay raw H.264, browser decodes - "
+                         "near-zero CPU, needs a modern browser")
     ap.add_argument("--idle-timeout", type=int, default=60,
                     help="seconds with no viewer before the camera is put to "
                          "sleep; 0 disables (the camera runs HOT while streaming)")
     args = ap.parse_args()
 
     cap = Capture(scale_width=args.scale, quality=args.quality,
-                  idle_timeout=args.idle_timeout).start()
+                  idle_timeout=args.idle_timeout, mode=args.mode).start()
     Handler.capture = cap
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     srv.daemon_threads = True
-    print(f"serving on http://{args.bind}:{args.port}/", flush=True)
+    print(f"serving on http://{args.bind}:{args.port}/  mode={args.mode}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
