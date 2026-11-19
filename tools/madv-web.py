@@ -60,6 +60,8 @@ class Capture:
         self._pending = None
         self.last_request = time.time()
         self.streaming = False
+        self._last_frame_t = 0.0
+        self._frame_dt = 0.033      # EMA of the gap between frames
         self.sleep_now = False
         self.latest_thumb = None
         self.last_shutter = None
@@ -314,8 +316,18 @@ class Capture:
                 except Exception:
                     fr = None            # transient; keep going
                 if not (fr and fr["data"]):
-                    time.sleep(0.002)     # no frame ready; don't spin the CPU
+                    # The camera answers "busy" most of the time. Polling flat
+                    # out measured 368 calls/s for a 32 fps stream, at ~2.6 ms
+                    # per call - that poll loop, not the data, was the CPU.
+                    # Wait roughly half an observed frame interval instead.
+                    time.sleep(max(0.004, min(0.020, self._frame_dt * 0.5)))
                 if fr and fr["data"]:
+                    now_f = time.time()
+                    if self._last_frame_t:
+                        dt = now_f - self._last_frame_t
+                        if 0 < dt < 1.0:
+                            self._frame_dt = self._frame_dt * 0.8 + dt * 0.2
+                    self._last_frame_t = now_f
                     if ff is not None:
                         try:
                             ff.stdin.write(fr["data"])
