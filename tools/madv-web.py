@@ -500,11 +500,25 @@ let spin=false;
 // /frame.jpg or /stream.mjpg traffic as a viewer and would wake the camera
 // straight back up.
 let asleep = false;
+let veilMode = null;          // null | 'asleep' | 'paused'
+function showVeil(m, html){
+  if(m === 'paused' && asleep) return;   // never stomp the sleep veil
+  veilMode = m;
+  $('veil').firstElementChild.innerHTML = html;
+  $('veil').style.display = 'flex';
+}
+function hideVeil(onlyIf){
+  if(onlyIf && veilMode !== onlyIf) return;
+  veilMode = null;
+  $('veil').style.display = 'none';
+}
 function setAsleep(v){
   asleep = v;
   $('sleep').textContent = v ? 'Wake camera' : 'Sleep camera';
   $('sleep').classList.toggle('on', v);
-  $('veil').style.display = v ? 'flex' : 'none';
+  if(v) showVeil('asleep', 'camera asleep &mdash; encoder off<br>'
+                + '<span style="opacity:.7">click anywhere to wake</span>');
+  else hideVeil('asleep');
 }
 async function goSleep(){
   setAsleep(true);
@@ -522,7 +536,11 @@ async function wakeUp(){
   else { initStream().catch(()=>{}); }
 }
 $('sleep').onclick = () => { asleep ? wakeUp() : goSleep(); };
-$('veil').onclick  = () => { if(asleep) wakeUp(); };
+$('veil').onclick  = () => {
+  if(asleep){ wakeUp(); return; }
+  hideVeil('paused');                 // don't leave a dead overlay behind
+  vid.play().catch(()=>{});
+};
 $('spin').onclick = () => { spin=!spin; $('spin').classList.toggle('on', spin); };
 
 // ---------- status ----------
@@ -805,11 +823,12 @@ async function initStream(){
     window._playWatch = setInterval(() => {
       if(asleep || srcMode!=='fmp4') return;
       if(vid.buffered.length && vid.paused){
-        $('veil').style.display='flex';
-        $('veil').firstElementChild.innerHTML =
-          'video is paused<br><span style="opacity:.7">tap to start</span>';
+        if(veilMode !== 'paused') showVeil('paused',
+          'video is paused<br><span style="opacity:.7">tap to start</span>');
+      } else {
+        hideVeil('paused');             // playing again -> get out of the way
       }
-    }, 1500);
+    }, 1000);
     return;
   }
   if(!('VideoDecoder' in window)){ unsupported('this browser has no WebCodecs'); return; }
