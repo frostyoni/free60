@@ -192,11 +192,15 @@ class Capture:
                 # nobody looking for a while (or asked): stop the encoder so it cools down
                 if self.sleep_now or (self.idle_timeout and idle > self.idle_timeout):
                     print(f"[capture] no viewer for {self.idle_timeout}s - "
-                          f"camera to power save", flush=True)
+                          f"encoder off (session kept open)", flush=True)
                     try:
-                        cam.sleep()
+                        # stop live view ONLY.  close_session (7A 00 02) makes
+                        # the camera power down and drop off the USB bus
+                        # entirely - it then needs a physical replug, which is
+                        # much worse than a warm camera.
+                        cam.stop_liveview()
                     except Exception as e:
-                        print(f"[capture] sleep failed: {e}", flush=True)
+                        print(f"[capture] idle stop failed: {e}", flush=True)
                     self.streaming = False
                     self.sleep_now = False
                     continue
@@ -324,6 +328,7 @@ PAGE = r"""<!doctype html>
   <button id="snap">Save frame</button>
   <button id="spin">Auto-rotate</button>
   <button id="reset">Reset view</button>
+  <button id="inv">Invert Y</button>
   <span class="spacer"></span>
   <label class="s">zoom <input id="fov" type="range" min="30" max="120" value="75"></label>
 </div>
@@ -348,6 +353,13 @@ $('shutter').onclick = async () => {
 };
 $('snap').onclick = () => { window.location = '/api/snapshot.jpg?t=' + Date.now(); };
 $('reset').onclick = () => { yaw=Math.PI; pitch=0; fovT=75; velYaw=0; velPitch=0; $('fov').value=75; };
+let invertY=false;
+try{ invertY = localStorage.getItem('madv-invertY')==='1'; }catch(e){}
+function syncInv(){ $('inv').classList.toggle('on', invertY); }
+$('inv').onclick = () => { invertY=!invertY;
+  try{ localStorage.setItem('madv-invertY', invertY?'1':'0'); }catch(e){}
+  syncInv(); };
+syncInv();
 let spin=false;
 $('spin').onclick = () => { spin=!spin; $('spin').classList.toggle('on', spin); };
 
@@ -462,11 +474,12 @@ canvas.addEventListener('pointermove', e=>{
   lmove = now;
   const dx=e.clientX-lx, dy=e.clientY-ly; lx=e.clientX; ly=e.clientY;
   const {kx, ky} = dragScale();
+  const sy = invertY ? -1 : 1;          // invert-Y: drag up to look down
   yaw   -= dx*kx;
-  pitch += dy*ky;
+  pitch += dy*ky*sy;
   pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitch));
   velYaw   = (-dx*kx)/dts;      // radians per second
-  velPitch = ( dy*ky)/dts;
+  velPitch = ( dy*ky*sy)/dts;
 });
 canvas.addEventListener('wheel', e=>{ e.preventDefault();
   fovT = Math.max(30, Math.min(120, fovT + (e.deltaY>0?4:-4)));

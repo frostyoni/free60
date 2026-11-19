@@ -430,9 +430,22 @@ Two levels, both confirmed to be accepted (`00`):
 
 | Action | Effect |
 |---|---|
-| `7A 01 02` stop live view | encoder stops, session still open |
-| `7A 00 02` close communication | session ends, camera drops to **power save** |
+| `7A 01 02` stop live view | encoder stops, camera stays on the USB bus — **use this to cool down** |
+| `7A 00 02` close communication | session ends **and the camera powers down and leaves the USB bus** — needs a replug |
 | `7A 01 F0` power off | camera shuts down |
+
+That middle row cost real confusion. `7A 00 02` was assumed to be a light
+"power save"; observed log:
+
+```
+[capture] no viewer for 60s - camera to power save
+[capture] waking
+[capture] USBError: [Errno 19] No such device (it may have been disconnected)
+```
+
+The device was gone from `lsusb` entirely. So an idle timeout that closed the
+session effectively unplugged the camera. The web demo now only stops live
+view when idle.
 
 `tools/madv.py sleep` does stop-live-view + close-session, and `tools/madv-web.py`
 does it automatically after `--idle-timeout` seconds with no viewer. Do not

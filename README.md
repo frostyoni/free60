@@ -50,8 +50,8 @@ Working, verified against real hardware:
 - ✅ thumbnail download (272×272 JPEG)
 - ✅ still capture trigger (completes in ~1 s)
 - ✅ browser demo with a drag-to-look 360° viewer
-- ✅ **camera sleep/wake** — idle with no viewer puts it in power save, and the
-  next request brings the stream back
+- ✅ **idle handling** — with no viewer the encoder is stopped (cool) and the
+  next request brings the stream straight back; the device stays on the bus
 - ✅ zero-transcode mode (`--mode webcodecs`): server relays H.264, the browser
   decodes it. Not yet run against hardware.
 
@@ -203,9 +203,12 @@ last resort and has never been executed.
 
 - **The camera runs hot.** Streaming keeps the ISP and the H.264 encoder
   running flat out, so a plug-in unit gets noticeably warm within minutes. It
-  is not a fault, but it is why `madv.py sleep` exists: stop live view and
-  close the session, and it drops to power save. Always leave it asleep rather
-  than merely idle.
+  is not a fault. To cool it, **stop live view** (`7A 01 02`) — that stops the
+  encoder and leaves the camera on the bus, ready to resume.
+- **Do not `close_session` (`7A 00 02`) to save power.** It powers the camera
+  down and it **leaves the USB bus**; getting it back needs a physical replug.
+  `madv.py sleep` does this deliberately — use it when putting the unit away,
+  not as an idle mode. The web demo only ever stops live view.
 - The camera **wedges** after long experiment runs and stops answering. It has
   no battery, so a physical unplug/replug is the only reset.
 - `0xFF` in a reply means "asleep" — re-send open communication. The driver

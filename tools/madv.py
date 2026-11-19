@@ -590,10 +590,13 @@ class Camera:
     def sleep(self):
         """Stop streaming and close the session.
 
-        This is the correct way to leave the camera. `close_session` (7A 00 02)
-        puts it into power save; the ISP and H.264 encoder stop, which is what
-        actually makes the thing cool down. It wakes on the next
-        open communication.
+        HEADS UP: `close_session` (7A 00 02) does not merely idle the camera -
+        it powers it down and it LEAVES THE USB BUS. Bringing it back needs a
+        physical replug. Use this when you are putting the unit away.
+
+        To cool it down while keeping it usable, call `stop_liveview()` only:
+        that stops the ISP and encoder (the heat source) and leaves the device
+        enumerated.
         """
         st = self.stop_liveview()
         return {"stop_liveview": st, "close_session": self.close_session()}
