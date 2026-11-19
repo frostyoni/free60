@@ -94,6 +94,9 @@ armv7 all work — the driver is pure Python over libusb.
 Why Python rather than Rust: **[docs/DESIGN.md](docs/DESIGN.md)** — including
 the measurements that say where Python is the wrong answer.
 
+The story of the recovery, and the three things I got confidently wrong along
+the way: **[docs/STORY.md](docs/STORY.md)**.
+
 ## Portability
 
 | Platform | Status | Notes |
@@ -208,6 +211,26 @@ sudo nft delete table inet <table> && sudo nft -f <your-rules-file>.nft
 Then verify from **another host**. A listener on localhost proves nothing about
 the firewall or the LAN path.
 
+### Feeding something other than a browser
+
+The camera's own H.264 is available as a plain fragmented MP4 that any player
+can read — ffmpeg, VLC, OBS, a bare `<video src>`:
+
+```
+http://<host>:8901/live.mp4
+```
+
+To make it an ordinary **webcam**, run this on the machine that wants the
+camera (not the one it is plugged into), which needs `v4l2loopback`:
+
+```bash
+./tools/virtual-cam.sh --src http://<host>:8901/live.mp4
+```
+
+It projects the equirectangular panorama to a flat 95-degree view with ffmpeg's
+`v360` filter, so Zoom and friends see a normal camera rather than a warped
+panorama. `--raw` leaves it unprojected.
+
 ### Tools
 
 | File | Purpose |
@@ -215,6 +238,7 @@ the firewall or the LAN path.
 | `tools/madv.py` | host driver + CLI (probe/info/live/photo/thumb/shoot/record/sleep/poweroff/raw/dump) |
 | `tools/madv-web.py` | HTTP server + 360° browser demo |
 | `tools/axml.py` | standalone Android binary-XML parser (used to read the APK manifest) |
+| `tools/virtual-cam.sh` | publish the stream as a V4L2 webcam (viewer-side) |
 | `tools/60-madv-mini.rules` | udev rule for `464a:4d02` |
 
 `madv.py` deliberately has **no dependencies beyond pyusb** — it builds the

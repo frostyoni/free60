@@ -150,6 +150,19 @@ Response convention: `resp[0]` = status —
 | `7A 05 82` | "picture done" ack — send after a completed download | |
 | `7A 05 03` | thumbnail | 148480-byte envelope, `[16:20]`=len |
 
+Served endpoints in the web demo:
+
+| path | framing | for |
+|---|---|---|
+| `/stream.mp4` | `[u32 LE length]` records | the built-in page, which splits on boundaries |
+| `/live.mp4` | plain fragmented MP4 | **anything else** - ffmpeg, VLC, OBS, `<video src>` |
+| `/stream.mjpg` | multipart JPEG | `--mode mjpeg` |
+| `/stream.h264` | length-prefixed Annex-B | `--mode webcodecs` |
+
+`/live.mp4` exists because the length prefix that the page needs makes the
+stream unreadable to standard players. Verified: `ffmpeg -i .../live.mp4`
+pulls it and `v360` projects the panorama to a flat 1280x720 view.
+
 ### Firmware upload — category 0x06
 `7B 06 80` with a payload whose `[64]`,`[68]`,`[72]`,`[76]` are u32 LE
 (chunk offsets/length) and data from `[80]`.
@@ -631,7 +644,36 @@ Fixes:
 
 Verified: SIGTERM exits in ~1 s, cleanly.
 
-### Still capture wedges the unit (open)
+### Still capture resets the USB connection (open, 2026-11-19)
+
+New evidence from the TV-box deployment, which is the more informative one:
+dmesg shows a **full USB disconnect and re-enumeration** at the moment of the
+capture attempt, not merely an unresponsive device.
+
+```
+usb 3-1: USB disconnect, device number 4
+usb 3-1: new high-speed USB device number 5 using ehci-platform
+usb 3-1: New USB device found, idVendor=464a, idProduct=4d02
+```
+
+Same serial, new device number: the camera reset itself. Three such resets in
+one session, and no over-current message from the kernel.
+
+So capture is not a protocol failure, and the full-resolution download has never
+actually been reached on that unit. Two candidate causes remain and the
+experiment that separates them has not been run:
+
+1. **a current spike on capture** (sensor and flash) browning out a marginal
+   port - which fits the warm unit, the extension lead and the re-enumeration
+2. **a firmware reset** in the capture path, independent of power
+
+Test: the same capture on a separately-powered hub, watching dmesg. If it stops
+resetting, it was power.
+
+Earlier, on a direct port, the capture *did* complete and the download answered
+`busy` - which is a third, separate problem. Both are unsolved.
+
+### Still capture wedges the unit (older note)
 
 On the current unit, `7A 01 05` + poll completed in ~1 s on the first attempt
 (direct port). On two later attempts the same sequence wedged the camera: it
