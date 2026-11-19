@@ -29,6 +29,7 @@ Usage:
 """
 
 import argparse
+import array
 import ctypes
 import glob
 import os
@@ -113,6 +114,11 @@ class UsbTransport:
             pass
         usb.util.claim_interface(self.dev, self.iface_num)
         self._claimed = True
+        # pyusb allocates a fresh buffer for every read() when given a size.
+        # Passing the same array every time lets it return a byte count
+        # instead, which removes one 64 KiB allocation and one copy per
+        # transfer - and the capture loop does ~700 of those a second.
+        self._rx = array.array("B", bytes(self.CHUNK))
 
     # -- low level --
     def _write(self, data, timeout=None):
@@ -120,8 +126,9 @@ class UsbTransport:
                               timeout=timeout or self.timeout_ms)
 
     def _read(self, size, timeout=None):
-        return bytes(self.dev.read(self.EP_IN, size,
-                                   timeout=timeout or self.timeout_ms))
+        """Bulk-in into the reusable buffer; returns the byte count."""
+        return int(self.dev.read(self.EP_IN, self._rx,
+                                 timeout=timeout or self.timeout_ms))
 
     def reset(self):
         """Bulk-Only Mass Storage Reset: C0111b.m1212m()."""
@@ -151,14 +158,14 @@ class UsbTransport:
                 if tag == self.tag:
                     return bytes(acc[:-13]), status
             try:
-                chunk = self._read(self.CHUNK, timeout)
+                n = self._read(self.CHUNK, timeout)
             except Exception as e:
                 if len(acc) >= 13 and bytes(acc[-13:-9]) == USB_SIG_CSW:
                     return bytes(acc[:-13]), acc[-1]
                 raise IOError(f"bulk-in failed after {len(acc)} bytes: {e}")
-            if not chunk:
+            if not n:
                 continue
-            acc += chunk
+            acc += memoryview(self._rx)[:n]
             if len(acc) > 4 * 1024 * 1024:
                 raise IOError("response overflow")
         raise IOError("no CSW from device")

@@ -336,6 +336,10 @@ class Capture:
                             break
                     else:
                         self.publish(fr["data"])
+                    # The next frame is roughly _frame_dt away. Waiting most of
+                    # that here means the following poll lands on a frame
+                    # instead of bouncing off "busy" first.
+                    time.sleep(max(0.002, min(0.030, self._frame_dt * 0.6)))
                 now = time.time()
                 if now - t_fps >= 2.0:
                     self.fps = (self.frames - frames_at) / (now - t_fps)
