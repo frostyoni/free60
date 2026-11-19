@@ -114,24 +114,23 @@ one. A brownout looks exactly like a firmware bug.
 
 ## Quick start
 
-The camera needs unprivileged USB access via the included udev rule.
-
 ```bash
-# 1. let your user talk to the camera
-sudo install -m644 tools/60-madv-mini.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+git clone <this repo> free60 && cd free60
 
-# 2. set up the venv (pyusb)
-python3 -m venv .venv && ./.venv/bin/pip install pyusb
+./tools/setup-host.sh --dry-run   # see what it would change
+./tools/setup-host.sh             # libusb, pyusb, udev rule, then probe
 
-# 3. is it there?
-./.venv/bin/python tools/madv.py probe
-./.venv/bin/python tools/madv.py info
-
-# 4. record 5 seconds of live view
-./.venv/bin/python tools/madv.py live -n 5 -o live.h264
+<pybin> tools/madv.py info                # expect fw_version = v1.1126
+<pybin> tools/madv.py live -n 5 -o live.h264
 ffplay live.h264
 ```
+
+`<pybin>` is whatever the setup script prints at the end: either `python3` or
+`./.venv/bin/python`, depending on whether your distro ships pyusb.
+
+- Full deployment checklist, services and firewall traps:
+  **[docs/DEPLOY.md](docs/DEPLOY.md)**
+- Agent-facing constraints and danger list: **[AGENTS.md](AGENTS.md)**
 
 ### Web demo
 
