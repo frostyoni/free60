@@ -56,6 +56,7 @@ class Capture:
         self._pending = None
         self.last_request = time.time()
         self.streaming = False
+        self.sleep_now = False
         self.latest_thumb = None
         self.last_shutter = None
         self.ff = None
@@ -188,8 +189,8 @@ class Capture:
                     t_fps = time.time()
                     continue
 
-                # nobody looking for a while: stop the encoder so it cools down
-                if self.idle_timeout and idle > self.idle_timeout:
+                # nobody looking for a while (or asked): stop the encoder so it cools down
+                if self.sleep_now or (self.idle_timeout and idle > self.idle_timeout):
                     print(f"[capture] no viewer for {self.idle_timeout}s - "
                           f"camera to power save", flush=True)
                     try:
@@ -197,6 +198,7 @@ class Capture:
                     except Exception as e:
                         print(f"[capture] sleep failed: {e}", flush=True)
                     self.streaming = False
+                    self.sleep_now = False
                     continue
 
                 try:
@@ -712,8 +714,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         if path == "/api/sleep":
-            self.capture.idle_timeout = 1   # force the idle path
-            self.capture.last_request = 0
+            self.capture.sleep_now = True    # one-shot; does not touch the config
             return self._send(200, "application/json", b'{"ok":true}')
         if path == "/api/shutter":
             self.capture.last_request = time.time()
