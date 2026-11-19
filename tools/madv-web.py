@@ -19,6 +19,7 @@ then open http://<this-host>:8901/
 
 import argparse
 import json
+import signal
 import os
 import subprocess
 import sys
@@ -305,15 +306,19 @@ class Capture:
                     frames_at = self.frames
                     t_fps = now
         finally:
-            self.running_to_restart = True
             if ff is not None:
                 try:
                     ff.kill()
                 except Exception:
                     pass
+            # Stop the encoder so it cools down, but DO NOT close the session.
+            # 7A 00 02 powers the camera off and it leaves the USB bus, and this
+            # finally runs on every teardown - including a service restart,
+            # where systemd kills the ffmpeg child first and the resulting
+            # broken stdin drops us straight through here. That turned every
+            # `systemctl restart` into a trip to the desk to replug the camera.
             try:
                 cam.stop_liveview()
-                cam.close_session()
             except Exception:
                 pass
             dev.close()
@@ -1011,6 +1016,13 @@ def main():
     cap = Capture(scale_width=args.scale, quality=args.quality,
                   idle_timeout=args.idle_timeout, mode=args.mode).start()
     Handler.capture = cap
+    # SIGTERM (systemctl stop/restart) must shut down deliberately: without a
+    # handler Python dies instantly and the capture loop never gets to stop
+    # live view. It must not close the session either - see _session's finally.
+    def _on_signal(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_signal)
+
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     srv.daemon_threads = True
     print(f"serving on http://{args.bind}:{args.port}/  mode={args.mode}", flush=True)
@@ -1020,6 +1032,12 @@ def main():
         pass
     finally:
         cap.running = False
+        # give the capture thread a moment to stop the encoder cleanly rather
+        # than having the process yanked mid-command
+        try:
+            cap.thread.join(timeout=5)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

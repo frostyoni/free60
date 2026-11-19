@@ -577,6 +577,28 @@ or behind HTTPS), but it is no longer the recommended path.
 The client now shows an explicit on-screen message when the API is missing
 instead of failing silently.
 
+### Teardown must never close the session (fixed 2026-11-19)
+
+The service sent `close_session` (`7A 00 02`) in its own teardown path — the
+exact command this document warns powers the camera off the bus.
+
+The chain: on `systemctl restart`, systemd kills the process group, so the
+ffmpeg child dies first; the capture thread's `stdin.write` hits a broken pipe,
+breaks out of `_session()`, and the `finally` called `close_session()`. Kernel
+log agreed: `usb 3-1: USB disconnect` at the second of the restart.
+
+So **every restart in a mode with an ffmpeg child (`mjpeg`, `fmp4`) stranded
+the camera until someone physically replugged it.** A restart requiring desk
+access is not a restart.
+
+Fixes:
+- the teardown calls `stop_liveview()` only
+- `SIGTERM` gets a handler, so shutdown is deliberate and the capture loop gets
+  a chance to stop the encoder instead of the process being yanked mid-command
+- `main()` joins the capture thread for up to 5 s
+
+Verified: SIGTERM exits in ~1 s, cleanly.
+
 ### Still capture wedges the unit (open)
 
 On the current unit, `7A 01 05` + poll completed in ~1 s on the first attempt
