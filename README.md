@@ -55,8 +55,9 @@ Open:
 
 - ⬜ full-resolution still download (`7A 05 02` still answers "busy")
 - ⬜ video recording (`7A 01 03`) — command accepted, untested end-to-end
-- ⬜ firmware reflash path — we hold the exact image, but the burn format is
-  only partly mapped
+- ⬜ firmware reflash path — we hold the exact image and the recovered
+  protocol, but the `.prm` patch step is not reimplemented and nothing has
+  been flashed. See [docs/FIRMWARE-RECOVERY.md](docs/FIRMWARE-RECOVERY.md)
 
 ---
 
@@ -127,11 +128,15 @@ match.
 documented there rather than lost.
 
 The original APK is **not** committed (38 MB). Keep a copy; it is the only
-surviving description of this device.
+surviving description of this device. APKPure hosts it (package com.madv.mini).
+
+If a unit ever bricks, [docs/FIRMWARE-RECOVERY.md](docs/FIRMWARE-RECOVERY.md)
+records the recovered flash protocol — read the warnings there first, it is a
+last resort and has never been executed.
 
 ---
 
-## Notes for whoever picks this up
+## Notes for the future
 
 - The camera **wedges** after long experiment runs and stops answering. It has
   no battery, so a physical unplug/replug is the only reset.
@@ -140,8 +145,22 @@ surviving description of this device.
 - A reply beginning `0x31 0x01 0x02 0x00` in a downloaded JPEG is a vendor tag
   the official app zeroes out before saving.
 - Place the camera **upright** if you want the panorama horizon level; on its
-  side the whole panorama is rolled 90°.
+  side the whole panorama is rolled 90°. Learned that the hard way because my workstation is upright, so the ports are sideways.
 
 ---
 
-License: TBD.
+## License
+
+[MIT](LICENSE) for the driver, the web demo and these docs — use it, ship it,
+fork it.
+
+That license does **not** extend to material recovered from the vendor's app,
+which stays its owner's copyright and is included only for interoperability
+and preservation:
+
+- `firmware/fw11126.zip` — the camera's own firmware
+- `reference/shaders/` — GLSL extracted from the APK
+- `reference/usb_device_filter.xml`
+
+The point of this project is that the hardware outlives the app. Take the code,
+take the protocol, and go keep a forgotten camera alive.
