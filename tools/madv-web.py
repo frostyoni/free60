@@ -408,6 +408,8 @@ PAGE = r"""<!doctype html>
  #hud{position:absolute;left:12px;bottom:12px;font:11px/1.4 ui-monospace,monospace;color:#9fb0c0;
       background:rgba(10,14,20,.55);padding:7px 10px;border-radius:8px;pointer-events:none}
  #err{color:#ff7b7b}
+ #vid{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
+      opacity:0;pointer-events:none;background:#000}
  #veil{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
        text-align:center;background:rgba(6,9,13,.86);color:#9fb0c0;
        font:13px/1.7 ui-monospace,monospace;cursor:pointer;z-index:5}
@@ -432,9 +434,9 @@ PAGE = r"""<!doctype html>
   <img id="flat" alt="panorama">
   <canvas id="flatwc" style="display:none;width:100%;height:100%;object-fit:contain;background:#000"></canvas>
   <canvas id="wc" style="display:none"></canvas>
-  <video id="vid" muted playsinline style="display:none;width:100%;height:100%;object-fit:contain"></video>
+  <video id="vid" muted playsinline></video>
   <div id="veil"><div>camera asleep &mdash; encoder off<br><span style="opacity:.7">click anywhere to wake</span></div></div>
-  <div id="hud">drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
+  <div id="hud"><span id="diag" style="display:block;opacity:.65;margin-bottom:3px"></span>drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
 </div>
 
 <div class="bar">
@@ -460,7 +462,7 @@ $('tab_flat').onclick = () => { mode='flat'; $('tab_flat').classList.add('on'); 
   $('gl').style.display='none';
   $('flat').style.display   = (srcMode==='mjpeg')?'block':'none';
   $('flatwc').style.display = (srcMode==='webcodecs')?'block':'none';
-  $('vid').style.display    = (srcMode==='fmp4')?'block':'none';
+  $('vid').style.opacity    = (srcMode==='fmp4')?'1':'0';
   if(srcMode==='webcodecs'){ flatwc.width=wcCanvas.width||1; flatwc.height=wcCanvas.height||1; } };
 
 $('shutter').onclick = async () => {
@@ -668,7 +670,7 @@ canvas.addEventListener('touchmove', e=>{
 canvas.addEventListener('touchend', ()=>{ pinch=null; });
 
 const img=new Image();
-let ready=false, busy=false, srcMode='mjpeg';
+let ready=false, busy=false, srcMode='mjpeg', frames=0;
 img.onload = ()=>{ ready=true; busy=false; };
 img.onerror = ()=>{ busy=false; };
 function grab(){ if(asleep||srcMode!=='mjpeg'||mode!=='360'||busy) return; busy=true; img.src='/frame.jpg?t='+Date.now(); }
@@ -700,7 +702,13 @@ function unsupported(msg){
 const vid = document.getElementById('vid');
 let fmp4Abort = null;
 
-async function fmp4Session(){
+let fmp4Gen = 0;
+function stopFmp4(){
+  fmp4Gen++;
+  if(fmp4Abort){ try{ fmp4Abort.abort(); }catch(e){} fmp4Abort = null; }
+}
+
+async function fmp4Session(myGen){
   // One MediaSource + one HTTP stream, resolved when the stream ends.
   return new Promise((resolve) => {
     const ms = new MediaSource();
@@ -718,7 +726,7 @@ async function fmp4Session(){
       try{ sb = ms.addSourceBuffer('video/mp4; codecs="' + CODEC + '"'); }
       catch(e){ unsupported('this browser cannot play ' + CODEC); finish(); return; }
       const queue = [];
-      let busy = false, firstFrame = true;
+      let busy = false;
       const pump = () => {
         if(busy || !queue.length || sb.updating) return;
         busy = true;
@@ -727,27 +735,30 @@ async function fmp4Session(){
       };
       sb.addEventListener('updateend', () => {
         busy = false;
-        // a late joiner's first fragment carries a large timestamp - jump to it
-        if(vid.buffered.length && vid.currentTime < vid.buffered.start(0)){
-          vid.currentTime = vid.buffered.start(0);
-        }
-        ready = true;
-        if(firstFrame){
-          // play() before sourceopen is rejected and the rejection was being
-          // swallowed, leaving a decoded-but-paused element
-          firstFrame = false;
-          vid.play().catch(()=>{});
+        if(myGen !== fmp4Gen) return;              // stale session
+        // Only claim readiness once there is real media.  The first updateend
+        // follows the INIT segment, when buffered.length is 0 and readyState
+        // is 0 - calling play() there rejects, and the old code swallowed that
+        // and never tried again, leaving a decoded but paused element.
+        if(vid.buffered.length){
+          if(vid.currentTime < vid.buffered.start(0)){
+            vid.currentTime = vid.buffered.start(0);   // late join
+          }
+          ready = true;
+          if(vid.paused) vid.play().catch(()=>{});
         }
         pump();
       });
       fmp4Abort = new AbortController();
+      const mine = fmp4Abort;
       try{
-        const res = await fetch('/stream.mp4', {signal: fmp4Abort.signal});
+        const res = await fetch('/stream.mp4', {signal: mine.signal});
         const reader = res.body.getReader();
         let buf = new Uint8Array(0);
         while(true){
           const {done: d, value} = await reader.read();
           if(d) break;
+          if(myGen !== fmp4Gen) break;
           const nb = new Uint8Array(buf.length + value.length);
           nb.set(buf); nb.set(value, buf.length); buf = nb;
           while(buf.length >= 4){
@@ -758,20 +769,20 @@ async function fmp4Session(){
             pump();
           }
         }
-      }catch(e){ /* aborted on sleep */ }
+      }catch(e){ /* aborted */ }
       finish();
     });
   });
 }
 
 async function startFmp4(){
-  // MediaSource has no secure-context requirement, so unlike WebCodecs this
-  // works over plain http on a LAN address - which is what phones and tablets
-  // will be using. Reconnects: the server closes the stream when it idles the
-  // encoder, and without this the page just froze until a manual reload.
-  while(!asleep){
-    await fmp4Session();
-    if(asleep) break;
+  // Only ever one chain of sessions. Re-entering here (wake, tab switch) used
+  // to stack loops and leave sockets that nothing could abort.
+  stopFmp4();
+  const myGen = fmp4Gen;
+  while(!asleep && myGen === fmp4Gen){
+    await fmp4Session(myGen);
+    if(asleep || myGen !== fmp4Gen) break;
     await new Promise(r => setTimeout(r, 1000));
   }
 }
@@ -787,7 +798,20 @@ async function initStream(){
     if(!asleep) $('flat').src = '/stream.mjpg';
     return;
   }
-  if(srcMode==='fmp4'){ startFmp4(); return; }
+  if(srcMode==='fmp4'){
+    startFmp4();
+    // some browsers refuse autoplay; offer a tap rather than a frozen frame
+    clearInterval(window._playWatch);
+    window._playWatch = setInterval(() => {
+      if(asleep || srcMode!=='fmp4') return;
+      if(vid.buffered.length && vid.paused){
+        $('veil').style.display='flex';
+        $('veil').firstElementChild.innerHTML =
+          'video is paused<br><span style="opacity:.7">tap to start</span>';
+      }
+    }, 1500);
+    return;
+  }
   if(!('VideoDecoder' in window)){ unsupported('this browser has no WebCodecs'); return; }
   decoder=new VideoDecoder({
     output: f => {
@@ -831,7 +855,7 @@ async function pumpH264(){
   }
 }
 
-let last=performance.now();
+let last=performance.now(), lastDiag=0;
 function draw(now){
   requestAnimationFrame(draw);
   const dt=Math.min(0.05,(now-last)/1000); last=now;
@@ -848,6 +872,15 @@ function draw(now){
     if(spin) yaw += dt*0.25;
   }
   if(!asleep) grab();           // keep fetching even before the first frame lands
+  if(now - lastDiag > 500){
+    lastDiag = now;
+    $('diag').textContent = (srcMode==='fmp4')
+      ? 'fmp4 paused=' + vid.paused + ' readyState=' + vid.readyState +
+        ' t=' + vid.currentTime.toFixed(1) + ' buffered=' + vid.buffered.length +
+        (vid.buffered.length ? ' [' + vid.buffered.start(0).toFixed(1) + '-' +
+                               vid.buffered.end(0).toFixed(1) + ']' : '')
+      : srcMode + ' frames=' + frames;
+  }
   if(mode!=='360'||!ready) return;
   const w=canvas.clientWidth||960, h=canvas.clientHeight||480;
   if(canvas.width!==w||canvas.height!==h){ canvas.width=w; canvas.height=h; }
