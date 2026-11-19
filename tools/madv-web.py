@@ -316,7 +316,7 @@ PAGE = r"""<!doctype html>
   <img id="flat" src="/stream.mjpg" alt="panorama">
   <canvas id="flatwc" style="display:none;width:100%;height:100%;object-fit:contain;background:#000"></canvas>
   <canvas id="wc" style="display:none"></canvas>
-  <div id="hud">drag to look &middot; scroll / pinch to zoom &middot; double-click to reset</div>
+  <div id="hud">drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
 </div>
 
 <div class="bar">
@@ -425,6 +425,8 @@ const U=n=>gl.getUniformLocation(prog,n);
 const uYaw=U('yaw'), uPitch=U('pitch'), uFov=U('fovYv'), uRes=U('res');
 
 let yaw=Math.PI, pitch=0, fovT=75;
+const VSENS = 1.9;      // vertical drag boost: 1:1 is far too slow on a wide canvas
+const PITCH_MAX = 1.55; // ~89 deg, so the nadir is actually reachable
 let velYaw=0, velPitch=0;
 let dragging=false, lx=0, ly=0, lmove=0, pinch=null;
 
@@ -436,7 +438,7 @@ function dragScale(){
   let ty = tx / (w/h);
   if (w < h) { ty = tx; }
   const fovX = 2*Math.atan(tx), fovY = 2*Math.atan(ty);
-  return { kx: fovX/w, ky: fovY/h };
+  return { kx: fovX/w, ky: (fovY/h)*VSENS };
 }
 
 canvas.addEventListener('pointerdown', e=>{
@@ -455,7 +457,7 @@ canvas.addEventListener('pointermove', e=>{
   const {kx, ky} = dragScale();
   yaw   -= dx*kx;
   pitch += dy*ky;
-  pitch = Math.max(-1.45, Math.min(1.45, pitch));
+  pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitch));
   velYaw   = (-dx*kx)/dts;      // radians per second
   velPitch = ( dy*ky)/dts;
 });
@@ -463,6 +465,15 @@ canvas.addEventListener('wheel', e=>{ e.preventDefault();
   fovT = Math.max(30, Math.min(120, fovT + (e.deltaY>0?4:-4)));
   $('fov').value = fovT;
 },{passive:false});
+window.addEventListener('keydown', e=>{
+  const step = 0.09;
+  if(e.key==='ArrowLeft'){ yaw += step; velYaw=velPitch=0; e.preventDefault(); }
+  else if(e.key==='ArrowRight'){ yaw -= step; velYaw=velPitch=0; e.preventDefault(); }
+  else if(e.key==='ArrowUp'){ pitch = Math.max(-PITCH_MAX, pitch-step); velYaw=velPitch=0; e.preventDefault(); }
+  else if(e.key==='ArrowDown'){ pitch = Math.min(PITCH_MAX, pitch+step); velYaw=velPitch=0; e.preventDefault(); }
+  else if(e.key==='+'||e.key==='='){ fovT=Math.max(30,fovT-4); $('fov').value=fovT; }
+  else if(e.key==='-'){ fovT=Math.min(120,fovT+4); $('fov').value=fovT; }
+});
 canvas.addEventListener('dblclick', ()=>{ yaw=Math.PI; pitch=0; velYaw=0; velPitch=0; fovT=75; $('fov').value=75; });
 $('fov').oninput = e => { fovT = +e.target.value; };
 
@@ -557,7 +568,7 @@ function draw(now){
       velYaw *= decay; velPitch *= decay;
       if(Math.abs(velYaw)   < 0.02) velYaw = 0;
       if(Math.abs(velPitch) < 0.02) velPitch = 0;
-      pitch=Math.max(-1.45,Math.min(1.45,pitch));
+      pitch=Math.max(-PITCH_MAX,Math.min(PITCH_MAX,pitch));
     }
     if(spin) yaw += dt*0.25;
   }
