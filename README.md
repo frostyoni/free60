@@ -48,12 +48,14 @@ Working, verified against real hardware:
 - ✅ all settings read/write, date/time
 - ✅ **live view — H.264 1920×960 @ ~30 fps**, decodes cleanly
 - ✅ thumbnail download (272×272 JPEG)
-- ✅ still capture trigger (completes in ~1 s)
+- ⚠️ still capture **trigger** — accepted and completes in ~1 s, but has
+  wedged the unit twice. See the open item below
 - ✅ browser demo with a drag-to-look 360° viewer
 - ✅ **idle handling** — with no viewer the encoder is stopped (cool) and the
   next request brings the stream straight back; the device stays on the bus
-- ✅ zero-transcode mode (`--mode webcodecs`): server relays H.264, the browser
-  decodes it. Not yet run against hardware.
+- ✅ zero-transcode mode (`--mode webcodecs`): server relays the camera's own
+  H.264 and the browser decodes it. Verified end to end — 129 access units /
+  2.53 MB in 4 s, keyframe every ~0.53 s, no ffmpeg process involved.
 
 Open:
 

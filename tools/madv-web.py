@@ -330,7 +330,7 @@ PAGE = r"""<!doctype html>
 
 <div id="stage">
   <canvas id="gl"></canvas>
-  <img id="flat" src="/stream.mjpg" alt="panorama">
+  <img id="flat" alt="panorama">
   <canvas id="flatwc" style="display:none;width:100%;height:100%;object-fit:contain;background:#000"></canvas>
   <canvas id="wc" style="display:none"></canvas>
   <div id="veil"><div>camera asleep &mdash; encoder off<br><span style="opacity:.7">click anywhere to wake</span></div></div>
@@ -591,10 +591,17 @@ function isKeyFrame(au){
 }
 
 async function startWebCodecs(){
-  const j = await (await fetch('/api/info')).json();
+  let j = {};
+  try{ j = await (await fetch('/api/info')).json(); }catch(e){}
   srcMode = j.mode || 'mjpeg';
   CODEC = j.codec || CODEC;
-  if(srcMode!=='webcodecs') return;
+  if(srcMode!=='webcodecs'){
+    // only the mjpeg path needs the multipart stream.  Opening it in
+    // webcodecs mode used to leave a server thread blocked on frames that
+    // never come, because no ffmpeg runs in that mode.
+    if(!asleep) $('flat').src = '/stream.mjpg';
+    return;
+  }
   if(!('VideoDecoder' in window)){
     console.warn('WebCodecs unavailable - restart the server with --mode mjpeg');
     return;
@@ -784,7 +791,7 @@ class Handler(BaseHTTPRequestHandler):
                 while True:
                     if not q:
                         time.sleep(0.004)
-                        if not self.running_hint():
+                        if not cap.running:
                             break
                         continue
                     au = q.popleft()
@@ -803,9 +810,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "image/jpeg", t)
 
         return self._send(404, "text/plain", b"not found")
-
-    def running_hint(self):
-        return True
 
     def do_POST(self):
         path = self.path.split("?")[0]

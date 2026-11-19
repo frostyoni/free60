@@ -264,22 +264,32 @@ simply the only host software.
 
 ---
 
-## 8. Plan
+## 8. Where this stands
 
-1. **Probe** — plug in a unit, run `tools/madv.py probe`, confirm VID/PID,
-   interface class, and whether `usb-storage` binds it. (blocks everything)
-2. **Confirm opcodes** — `info`, `status`, `settings`. Validate the reply
-   offsets in §4 against reality; fix the tool where wrong.
-3. **Capture** — get live H.264 + one still + one thumbnail off the device.
-4. **Stitch** — reimplement the equirect projection (start from the shader in
-   §6, CPU or GL). Then the camera produces real 360 output again.
-5. **Package** — a single Linux tool + optional V4L2-style stream, so the
-   device becomes a plain webcam/360 camera on any machine.
-6. **Publish** — firmware, protocol notes, driver, stitching. Give the device
-   back to the world.
+Done and verified against hardware: enumeration and BBB transport, session
+handling with automatic recovery, every settings read/write, date/time, live
+view, thumbnail, still-capture trigger, the browser 360 viewer, idle/sleep
+handling, and the zero-transcode relay.
 
-If the interface turns out to be vendor-class rather than mass-storage,
-switch the transport to libusb and build the CBW/CSW envelope by hand using §3.
+Left, in rough order of value:
+
+1. **Full-resolution stills.** `7A 05 02` answers busy, and the capture path has
+   wedged the unit twice — it stops answering while still enumerating. Neither
+   behaviour is understood. If the still turns out to be dual fisheye, the
+   shader described in §6 is the tool for it; if it is already equirect, it is
+   trivial. That question cannot be answered until a download actually works.
+2. **Recording.** `7A 01 03` is accepted but nothing has been recorded
+   end-to-end, and the unit's own storage is unproven: `7A 03 35` returns no
+   count at all, which may mean there is none.
+3. **Firmware recovery.** Image and protocol recovered; the `.prm` patch step
+   is not. `docs/FIRMWARE-RECOVERY.md` is explicit that nothing has been
+   flashed.
+4. **Packaging.** The web demo is the interface today. A V4L2-style device node
+   would let existing software use the camera, but the transport is vendor-class
+   bulk SCSI, so that means a userspace bridge, not a kernel driver.
+
+None of this is blocked on hardware I do not have — only on a working unit, a
+replug away.
 
 ---
 
@@ -411,8 +421,8 @@ settings and it streams.**
 
 ### Live view: WORKING
 
-- **H.264 High profile, 1920 x 960, ~26 fps**, decodes cleanly with ffmpeg.
-- 131 frames in 5 s (~2.6 MB).
+- **H.264 High profile, 1920 x 960, ~30 fps**, decodes cleanly with ffmpeg.
+- Measured: 129 access units / 2.53 MB in 4 s; 96-98 AUs per 3 s.
 - Frame envelope (verified): **32-byte header**
   - `[0]` status (0 = ok)
   - `[1]` last-chunk flag
@@ -487,7 +497,7 @@ the only reset**. Do that before assuming a regression.
 ### Tool status
 
 `tools/madv.py` now works for:
-`probe`, `info`, `status`, `settings`, `dump`, `live` (**verified, 26 fps**),
+`probe`, `info`, `status`, `settings`, `dump`, `live` (**verified, 30 fps**),
 `thumb` (**verified, JPEG**), `shoot` (**verified, capture completes**),
 `record`, `raw`, `set_datetime`, `prepare`, `start_stream`.
 
