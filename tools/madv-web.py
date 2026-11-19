@@ -494,6 +494,9 @@ PAGE = r"""<!doctype html>
     <div class="row"><span>buffered</span><b id="s_buf">-</b></div>
     <div class="row"><span>dropped</span><b id="s_drop">-</b></div>
     <div class="row"><span>sessions</span><b id="s_gen">-</b></div>
+    <div class="row"><span class="lbl">server</span><b>-</b></div>
+    <div class="row"><span>subscribers</span><b id="s_subs">-</b></div>
+    <div class="row"><span>streaming</span><b id="s_strm">-</b></div>
     <div class="row"><span>canvas</span><b id="s_cv">-</b></div>
     <div class="g"><div class="lbl">fps</div><canvas id="g_fps" width="240" height="26"></canvas></div>
     <div class="g"><div class="lbl">mbit/s</div><canvas id="g_mb" width="240" height="26"></canvas></div>
@@ -673,6 +676,10 @@ function statsTick(){
   const q = vid.getVideoPlaybackQuality ? vid.getVideoPlaybackQuality() : null;
   $('s_drop').textContent = q ? (q.droppedVideoFrames+' / '+q.totalVideoFrames) : '-';
   $('s_gen').textContent  = fmp4Gen;
+  if(j){
+    $('s_subs').textContent = (j.subscribers ?? '-');
+    $('s_strm').textContent = j.streaming ? 'yes' : 'idle';
+  }
   $('s_cv').textContent   = canvas.width+'\u00d7'+canvas.height+' @'+window.devicePixelRatio;
   spark($('g_fps'), histFps, '#4fd1c5', 'rgba(79,209,197,.13)');
   spark($('g_mb'),  histMb,  '#ffb86b', 'rgba(255,184,107,.13)');
