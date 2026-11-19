@@ -462,12 +462,30 @@ verified end-to-end against a live camera.**
 
 ### Still capture wedges the unit (open)
 
-On the current unit, `7A 01 05` + poll used to complete in ~1 s. After the
-camera was moved onto a USB extension lead, the same sequence hangs and the
-camera stops answering entirely — it stays enumerated (`464a:4d02` still in
-`lsusb`) but every command times out, and only a physical replug recovers it.
+On the current unit, `7A 01 05` + poll completed in ~1 s on the first attempt
+(direct port). On two later attempts the same sequence wedged the camera: it
+stays enumerated (`464a:4d02` still visible in `lsusb`) but every command times
+out, and only a physical replug recovers it.
 
-Leading hypothesis is **under-voltage during the capture current spike**
-(see the power note in the README), not a protocol error: the exact same
-commands worked on a direct port. Needs a controlled test — direct port,
-then powered hub — before the still-download protocol work continues.
+**The USB extension lead has been cleared.** It was the obvious suspect, but
+the unit now runs behind that same extension at a steady 30 fps, and sleep/wake
+works through it. So under-voltage during the capture spike is no longer a
+convincing explanation, and the remaining candidate is a genuine firmware
+wedge in the capture path.
+
+Next attempt should be instrumented rather than hopeful: log the exact command
+that stops answering, and try the capture with live view *not* running, since
+every successful capture so far happened with a stream open and every failure
+has too — that variable is still uncontrolled.
+
+### Sleep/wake (verified 2026-11-19)
+
+Confirmed against hardware through the web server's idle path:
+
+```
+[capture] no viewer for 1s - camera to power save
+[capture] waking
+```
+
+and the next `/frame.jpg` returned a valid 64 KB frame immediately after.
+`madv.py sleep` uses the same two commands (`7A 01 02` then `7A 00 02`).

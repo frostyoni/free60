@@ -50,16 +50,20 @@ Working, verified against real hardware:
 - ✅ thumbnail download (272×272 JPEG)
 - ✅ still capture trigger (completes in ~1 s)
 - ✅ browser demo with a drag-to-look 360° viewer
+- ✅ **camera sleep/wake** — idle with no viewer puts it in power save, and the
+  next request brings the stream back
 - ✅ zero-transcode mode (`--mode webcodecs`): server relays H.264, the browser
   decodes it. Not yet run against hardware.
 
 Open:
 
 - ⬜ full-resolution still download (`7A 05 02` still answers "busy"). Worse,
-  on the current unit a still capture now **wedges the camera** part-way
-  through — it stays on the bus but stops answering and only a replug clears
-  it. This started after the unit was moved onto a USB extension lead, so
-  under-voltage is the leading suspect, not the protocol.
+  On the current unit a still capture has twice **wedged the camera** part-way
+  through — it stays on the bus (`lsusb` still shows it) but every command
+  times out, and only a replug clears it. A USB extension lead was initially
+  suspected and has since been cleared: the same unit streams at a steady
+  30 fps through it. Treat the wedge as an unexplained firmware behaviour
+  until someone reproduces it with instrumentation.
 - ⬜ video recording (`7A 01 03`) — command accepted, untested end-to-end
 - ⬜ firmware reflash path — we hold the exact image and the recovered
   protocol, but the `.prm` patch step is not reimplemented and nothing has
@@ -93,13 +97,16 @@ ISP and the H.264 encoder run flat out.
 hardware this project does not have — but it is plainly well above 100 mA in
 use, and the unit gets noticeably warm within minutes of streaming.
 
-Practical consequences:
+**A short USB extension lead is fine and often necessary.** The camera has to
+stand upright to give a level panorama, and nobody has an upward-facing USB
+port — so in practice it runs on a short passive extension. This project's unit
+has been driven that way at a steady 30 fps without trouble. The risk is not
+"an extension" as such, it is **weak or overloaded ports**: a busy unpowered
+hub, a very long or thin cable, or a port already near its budget.
 
-- Prefer a **direct port** on the host. Unpowered hubs, cheap USB extension
-  leads and long cables are the usual source of trouble.
-- The failure mode is misleading. Under-volted, the camera still enumerates,
-  still acknowledges commands, but never produces a frame — or wedges part-way
-  through a command. A brownout looks exactly like a firmware bug.
+Failure is misleading. Under-volted, the camera still enumerates and still
+acknowledges commands, but never produces a frame — or wedges part-way through
+one. A brownout looks exactly like a firmware bug.
 - If `probe` and `info` work but `live` stays silent, suspect power before you
   suspect code.
 - It has no battery and no soft power switch, so **unplugging is the only hard
