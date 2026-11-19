@@ -384,12 +384,19 @@ void main(){
   float tx = tan(fovYv*0.5);
   float ty = tx / aspect;
   if (aspect < 1.0) { ty = tx; tx = ty * aspect; }
-  vec3 d = vec3(p.x*tx, p.y*ty, 1.0);
+  // BUGFIX 1: this ray must be normalised. atan2 is scale-invariant so the
+  // longitude survived, but asin(d2.y) does not - an unnormalised ray made the
+  // clamp bite at the edges and stretched the panorama vertically off-centre.
+  vec3 d = normalize(vec3(p.x*tx, p.y*ty, 1.0));
 
-  float cy=cos(yaw),  sy=sin(yaw);
+  // BUGFIX 2: pitch about the camera's LOCAL X first, THEN yaw about world Y.
+  // The old order (yaw then pitch-about-world-X) meant that at yaw=180 the
+  // vertical axis flipped - drag down moved the scene up - and at yaw=90 pitch
+  // degenerated into roll, so the view circled instead of tilting.
   float cp=cos(pitch), sp=sin(pitch);
-  vec3 d1 = vec3(cy*d.x + sy*d.z, d.y, -sy*d.x + cy*d.z);
-  vec3 d2 = vec3(d1.x, cp*d1.y - sp*d1.z, sp*d1.y + cp*d1.z);
+  vec3 d1 = vec3(d.x,  cp*d.y - sp*d.z, sp*d.y + cp*d.z);
+  float cy=cos(yaw),  sy=sin(yaw);
+  vec3 d2 = vec3(cy*d1.x + sy*d1.z, d1.y, -sy*d1.x + cy*d1.z);
 
   float u = fract(atan(d2.x, d2.z)/TAU + 0.5);
   float v = 0.5 - asin(clamp(d2.y,-1.0,1.0))/PI;
