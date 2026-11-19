@@ -1195,6 +1195,49 @@ class Handler(BaseHTTPRequestHandler):
                 cap.unsubscribe(q)
             return
 
+        if path == "/live.mp4":
+            # Standard-consumable fragmented MP4: init segment then fragments,
+            # verbatim, no framing. /stream.mp4 is length-prefixed because the
+            # page needs to split records; anything else - ffmpeg, VLC, OBS, a
+            # <video src=...> - wants the plain stream.
+            cap.last_request = time.time()
+            q = cap.subscribe()
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+
+            def chunk(data):
+                self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                cap.bytes_out += len(data)
+
+            try:
+                sent_init = False
+                last_send = time.time()
+                while True:
+                    if not sent_init and cap.mp4_init:
+                        chunk(cap.mp4_init); self.wfile.flush()
+                        sent_init = True
+                        cap.last_request = time.time(); last_send = time.time()
+                    if not q:
+                        time.sleep(0.004)
+                        if not cap.running:
+                            break
+                        if not cap.streaming and time.time() - last_send > 5:
+                            break
+                        continue
+                    frag = q.popleft()
+                    chunk(frag); self.wfile.flush()
+                    cap.last_request = time.time(); last_send = time.time()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                cap.unsubscribe(q)
+            return
+
         if path == "/stream.h264":
             cap.last_request = time.time()
             q = cap.subscribe()
