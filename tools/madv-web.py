@@ -102,14 +102,24 @@ class Capture:
         # the H.264 stream mid-flight and a tiny probe size makes ffmpeg
         # give up.  -err_detect ignore_err keeps it alive across the
         # occasional dropped access unit.
+        # -r on the INPUT side gives ffmpeg a frame rate to synthesise
+        # timestamps from. Raw H.264 on a pipe has none, and if the stream is
+        # joined mid-GOP some ffmpeg builds then produce degenerate tfdt
+        # (observed: stuck at ~2.0 s advancing 15 microseconds per fragment).
         base = ["ffmpeg", "-hide_banner", "-loglevel", "warning",
-                "-err_detect", "ignore_err",
+                "-err_detect", "ignore_err", "-fflags", "+genpts",
+                "-r", "30",
                 "-f", "h264", "-i", "pipe:0", "-an"]
         if self.mode == "fmp4":
             # copy, don't transcode: fragmented MP4 that MediaSource can eat.
             # MSE does not need a secure context, unlike WebCodecs.
+            # +default_base_moof is REQUIRED. Without it ffmpeg writes tfhd
+            # with base-data-offset-present (flags 0x39) and an absolute
+            # offset from the start of the stream, so any client that did not
+            # receive the stream from byte 0 gets a fragment pointing ~64-100
+            # MB past what it has, and MediaSource silently paints nothing.
             cmd = base + ["-c:v", "copy",
-                          "-movflags", "+frag_keyframe+empty_moov",
+                          "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
                           "-frag_duration", "200000",
                           "-f", "mp4", "pipe:1"]
         else:
@@ -194,19 +204,30 @@ class Capture:
                 pos += size
             del buf[:pos]
 
+    @staticmethod
+    def _fragment_samples(frag):
+        """Frame count in a moof+mdat fragment, read from trun.sample_count."""
+        i = frag.find(b"trun")
+        if i < 0 or i + 12 > len(frag):
+            return 0
+        return int.from_bytes(frag[i + 8:i + 12], "big")
+
     def _publish_fragment(self, frag):
         with self.subs_lock:
             subs = list(self.subs)
         for q in subs:
             q.append(frag)
-        # one fragment is ~200 ms (frag_duration), so ~5 per second
+        # count frames, not fragments: a 200 ms fragment holds ~6 samples, and
+        # an earlier guess of "5 fragments/sec" reported 2 or 10 fps on a
+        # perfectly healthy stream
         now = time.time()
-        self.frames += 1
+        n = self._fragment_samples(frag) or 0
+        self.frames += n
         if self._fps_t0 is None:
             self._fps_t0, self._fps_n = now, 0
-        self._fps_n += 1
+        self._fps_n += n
         if now - self._fps_t0 >= 2.0:
-            self.fps = self._fps_n / (now - self._fps_t0) * 5.0
+            self.fps = self._fps_n / (now - self._fps_t0)
             self._fps_t0, self._fps_n = now, 0
 
     def _run(self):
@@ -291,6 +312,8 @@ class Capture:
                     fr = cam.get_frame()
                 except Exception:
                     fr = None            # transient; keep going
+                if not (fr and fr["data"]):
+                    time.sleep(0.002)     # no frame ready; don't spin the CPU
                 if fr and fr["data"]:
                     if ff is not None:
                         try:
