@@ -37,7 +37,9 @@ import madv
 class Capture:
     def __init__(self, scale_width=1920, quality=5, idle_timeout=60,
                  mode="mjpeg"):
-        self.mode = mode              # 'mjpeg' or 'webcodecs'
+        self.mode = mode              # 'mjpeg' | 'webcodecs' | 'fmp4'
+        self.mp4_init = b""
+        self._mp4_ready = False
         self.subs = []                # queues for raw H.264 relays
         self.subs_lock = threading.Lock()
         self.scale_width = scale_width
@@ -99,13 +101,22 @@ class Capture:
         # the H.264 stream mid-flight and a tiny probe size makes ffmpeg
         # give up.  -err_detect ignore_err keeps it alive across the
         # occasional dropped access unit.
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning",
-               "-err_detect", "ignore_err",
-               "-f", "h264", "-i", "pipe:0", "-an"]
-        if vf:
-            cmd += ["-vf", vf]
-        cmd += ["-vsync", "0", "-c:v", "mjpeg", "-q:v", str(self.quality),
-                "-f", "image2pipe", "pipe:1"]
+        base = ["ffmpeg", "-hide_banner", "-loglevel", "warning",
+                "-err_detect", "ignore_err",
+                "-f", "h264", "-i", "pipe:0", "-an"]
+        if self.mode == "fmp4":
+            # copy, don't transcode: fragmented MP4 that MediaSource can eat.
+            # MSE does not need a secure context, unlike WebCodecs.
+            cmd = base + ["-c:v", "copy",
+                          "-movflags", "+frag_keyframe+empty_moov",
+                          "-frag_duration", "200000",
+                          "-f", "mp4", "pipe:1"]
+        else:
+            cmd = list(base)
+            if vf:
+                cmd += ["-vf", vf]
+            cmd += ["-vsync", "0", "-c:v", "mjpeg", "-q:v", str(self.quality),
+                    "-f", "image2pipe", "pipe:1"]
         self._fflog = open("/tmp/madv-ffmpeg.log", "ab", buffering=0)
         self.ff = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE,
@@ -143,6 +154,60 @@ class Capture:
                         self._fps_t0, self._fps_n = now, 0
                     self.cond.notify_all()
 
+    def _read_mp4(self, ff):
+        """Split ffmpeg's fMP4 output into init segment + whole fragments."""
+        import struct as _s
+        buf = bytearray()
+        pending_moof = None
+        while self.running:
+            try:
+                chunk = os.read(ff.stdout.fileno(), 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            pos = 0
+            while True:
+                if len(buf) - pos < 8:
+                    break
+                size = int.from_bytes(buf[pos:pos + 4], "big")
+                typ = bytes(buf[pos + 4:pos + 8])
+                if size == 1:
+                    if len(buf) - pos < 16:
+                        break
+                    size = int.from_bytes(buf[pos + 8:pos + 16], "big")
+                if size < 8 or pos + size > len(buf):
+                    break
+                box = bytes(buf[pos:pos + size])
+                if typ == b"moof":
+                    self._mp4_ready = True
+                    pending_moof = box
+                elif typ == b"mdat":
+                    if pending_moof is not None:
+                        self._publish_fragment(pending_moof + box)
+                        pending_moof = None
+                else:
+                    if not self._mp4_ready:
+                        self.mp4_init += box      # ftyp + moov
+                pos += size
+            del buf[:pos]
+
+    def _publish_fragment(self, frag):
+        with self.subs_lock:
+            subs = list(self.subs)
+        for q in subs:
+            q.append(frag)
+        # one fragment is ~200 ms (frag_duration), so ~5 per second
+        now = time.time()
+        self.frames += 1
+        if self._fps_t0 is None:
+            self._fps_t0, self._fps_n = now, 0
+        self._fps_n += 1
+        if now - self._fps_t0 >= 2.0:
+            self.fps = self._fps_n / (now - self._fps_t0) * 5.0
+            self._fps_t0, self._fps_n = now, 0
+
     def _run(self):
         while self.running:
             try:
@@ -170,6 +235,12 @@ class Capture:
             ff = self._spawn_ffmpeg()
             threading.Thread(target=self._read_jpegs, args=(ff,),
                              daemon=True).start()
+        elif self.mode == "fmp4":
+            ff = self._spawn_ffmpeg()
+            threading.Thread(target=self._read_mp4, args=(ff,),
+                             daemon=True).start()
+            print("[capture] mode=fmp4: remuxing H.264 (copy), no re-encode",
+                  flush=True)
         else:
             print("[capture] mode=webcodecs: relaying access units, "
                   "no transcoding", flush=True)
@@ -333,6 +404,7 @@ PAGE = r"""<!doctype html>
   <img id="flat" alt="panorama">
   <canvas id="flatwc" style="display:none;width:100%;height:100%;object-fit:contain;background:#000"></canvas>
   <canvas id="wc" style="display:none"></canvas>
+  <video id="vid" muted playsinline style="display:none;width:100%;height:100%;object-fit:contain"></video>
   <div id="veil"><div>camera asleep &mdash; encoder off<br><span style="opacity:.7">click anywhere to wake</span></div></div>
   <div id="hud">drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
 </div>
@@ -358,10 +430,10 @@ $('tab_360').onclick = () => { mode='360'; $('tab_360').classList.add('on'); $('
   $('gl').style.display='block'; $('flat').style.display='none'; };
 $('tab_flat').onclick = () => { mode='flat'; $('tab_flat').classList.add('on'); $('tab_360').classList.remove('on');
   $('gl').style.display='none';
-  const wc = (srcMode==='webcodecs');
-  $('flat').style.display   = wc?'none':'block';
-  $('flatwc').style.display = wc?'block':'none';
-  if(wc){ flatwc.width=wcCanvas.width||1; flatwc.height=wcCanvas.height||1; } };
+  $('flat').style.display   = (srcMode==='mjpeg')?'block':'none';
+  $('flatwc').style.display = (srcMode==='webcodecs')?'block':'none';
+  $('vid').style.display    = (srcMode==='fmp4')?'block':'none';
+  if(srcMode==='webcodecs'){ flatwc.width=wcCanvas.width||1; flatwc.height=wcCanvas.height||1; } };
 
 $('shutter').onclick = async () => {
   const b=$('shutter'); const t=b.textContent; b.textContent='Capturing...';
@@ -408,15 +480,16 @@ async function goSleep(){
   setAsleep(true);
   $('flat').removeAttribute('src');          // drop the mjpeg connection
   if(h264Abort){ h264Abort.abort(); h264Abort=null; }
+  if(fmp4Abort){ fmp4Abort.abort(); fmp4Abort=null; }
   if(decoder){ try{ decoder.close(); }catch(e){} decoder=null; }
+  try{ vid.pause(); vid.removeAttribute('src'); vid.load(); }catch(e){}
   try{ await fetch('/api/sleep', {method:'POST'}); }catch(e){}
 }
 async function wakeUp(){
   setAsleep(false);
   try{ await fetch('/frame.jpg?t='+Date.now()); }catch(e){}   // triggers the wake
-  if(srcMode==='webcodecs'){ startWebCodecs().catch(()=>{}); }
-  else { $('flat').src='/stream.mjpg'; }
-  grab();
+  if(srcMode==='mjpeg'){ $('flat').src='/stream.mjpg'; grab(); }
+  else { initStream().catch(()=>{}); }
 }
 $('sleep').onclick = () => { asleep ? wakeUp() : goSleep(); };
 $('veil').onclick  = () => { if(asleep) wakeUp(); };
@@ -590,22 +663,78 @@ function isKeyFrame(au){
   return false;
 }
 
-async function startWebCodecs(){
+function unsupported(msg){
+  $('veil').style.display='flex';
+  $('veil').firstElementChild.innerHTML =
+    msg + '<br><span style="opacity:.7">restart the server with --mode fmp4 or --mode mjpeg</span>';
+}
+
+const vid = document.getElementById('vid');
+let fmp4Abort = null;
+
+function startFmp4(){
+  // MediaSource has no secure-context requirement, so unlike WebCodecs this
+  // works over plain http on a LAN address - which is what phones and tablets
+  // will be using.
+  const ms = new MediaSource();
+  vid.src = URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen', async () => {
+    let sb;
+    try{ sb = ms.addSourceBuffer('video/mp4; codecs="' + CODEC + '"'); }
+    catch(e){ unsupported('this browser cannot play ' + CODEC); return; }
+    const queue = [];
+    let busy = false;
+    const pump = () => {
+      if(busy || !queue.length || sb.updating) return;
+      busy = true;
+      try{ sb.appendBuffer(queue.shift()); }
+      catch(e){ busy = false; queue.length = 0; }
+    };
+    sb.addEventListener('updateend', () => {
+      busy = false;
+      // a late joiner's first fragment carries a large timestamp - jump to it
+      if(vid.buffered.length && vid.currentTime < vid.buffered.start(0)){
+        vid.currentTime = vid.buffered.start(0);
+      }
+      ready = true;
+      pump();
+    });
+    fmp4Abort = new AbortController();
+    try{
+      const res = await fetch('/stream.mp4', {signal: fmp4Abort.signal});
+      const reader = res.body.getReader();
+      let buf = new Uint8Array(0);
+      while(true){
+        const {done, value} = await reader.read();
+        if(done) break;
+        const nb = new Uint8Array(buf.length + value.length);
+        nb.set(buf); nb.set(value, buf.length); buf = nb;
+        while(buf.length >= 4){
+          const len = new DataView(buf.buffer, buf.byteOffset).getUint32(0, true);
+          if(buf.length < 4 + len) break;
+          queue.push(buf.slice(4, 4+len));
+          buf = buf.slice(4+len);
+          pump();
+        }
+      }
+    }catch(e){ /* aborted on sleep */ }
+  });
+  vid.play().catch(()=>{});
+}
+
+async function initStream(){
   let j = {};
   try{ j = await (await fetch('/api/info')).json(); }catch(e){}
   srcMode = j.mode || 'mjpeg';
   CODEC = j.codec || CODEC;
-  if(srcMode!=='webcodecs'){
-    // only the mjpeg path needs the multipart stream.  Opening it in
-    // webcodecs mode used to leave a server thread blocked on frames that
-    // never come, because no ffmpeg runs in that mode.
+  if(srcMode==='mjpeg'){
+    // only the mjpeg path needs the multipart stream.  Opening it in another
+    // mode used to leave a server thread blocked on frames that never come.
     if(!asleep) $('flat').src = '/stream.mjpg';
     return;
   }
-  if(!('VideoDecoder' in window)){
-    console.warn('WebCodecs unavailable - restart the server with --mode mjpeg');
-    return;
-  }
+  if(srcMode==='fmp4'){ startFmp4(); return; }
+  if(!('VideoDecoder' in window)){ unsupported('this browser has no WebCodecs'); return; }
   decoder=new VideoDecoder({
     output: f => {
       if(wcCanvas.width!==f.displayWidth){ wcCanvas.width=f.displayWidth; wcCanvas.height=f.displayHeight; }
@@ -670,8 +799,11 @@ function draw(now){
   if(canvas.width!==w||canvas.height!==h){ canvas.width=w; canvas.height=h; }
   gl.viewport(0,0,w,h);
   gl.bindTexture(gl.TEXTURE_2D,tex);
-  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,
-                srcMode==='webcodecs'?wcCanvas:img);
+  const src = (srcMode==='webcodecs') ? wcCanvas
+            : (srcMode==='fmp4')      ? vid
+            : img;
+  if(srcMode==='fmp4' && vid.readyState < 2) return;
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,src);
   gl.uniform2f(uRes,w,h);
   gl.uniform1f(uYaw,yaw);
   gl.uniform1f(uPitch,pitch);
@@ -679,7 +811,7 @@ function draw(now){
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 }
 requestAnimationFrame(draw);
-startWebCodecs().catch(e=>console.warn('webcodecs init failed', e));
+initStream().catch(e=>console.warn('stream init failed', e));
 </script></body></html>"""
 
 
@@ -772,6 +904,42 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 return
+        if path == "/stream.mp4":
+            cap.last_request = time.time()
+            q = cap.subscribe()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+
+            def chunk(data):
+                self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+
+            try:
+                import struct as _s
+                sent_init = False
+                while True:
+                    if not sent_init and cap.mp4_init:
+                        chunk(_s.pack("<I", len(cap.mp4_init)) + cap.mp4_init)
+                        self.wfile.flush()
+                        sent_init = True
+                    if not q:
+                        time.sleep(0.004)
+                        if not cap.running:
+                            break
+                        continue
+                    frag = q.popleft()
+                    chunk(_s.pack("<I", len(frag)) + frag)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                cap.unsubscribe(q)
+            return
+
         if path == "/stream.h264":
             cap.last_request = time.time()
             q = cap.subscribe()
@@ -830,10 +998,11 @@ def main():
     ap.add_argument("--scale", type=int, default=1920,
                     help="downscale width for the web preview (0 = native)")
     ap.add_argument("--quality", type=int, default=5)
-    ap.add_argument("--mode", choices=["mjpeg", "webcodecs"], default="mjpeg",
-                    help="mjpeg: server transcodes, plays in any browser. "
-                         "webcodecs: relay raw H.264, browser decodes - "
-                         "near-zero CPU, needs a modern browser")
+    ap.add_argument("--mode", choices=["mjpeg", "fmp4", "webcodecs"], default="mjpeg",
+                    help="mjpeg: server transcodes, any browser. "
+                         "fmp4: remux only (copy), near-zero CPU, browser uses "
+                         "MediaSource - works over plain http. "
+                         "webcodecs: relay raw H.264, secure context only")
     ap.add_argument("--idle-timeout", type=int, default=60,
                     help="seconds with no viewer before the camera is put to "
                          "sleep; 0 disables (the camera runs HOT while streaming)")

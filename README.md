@@ -53,9 +53,11 @@ Working, verified against real hardware:
 - ✅ browser demo with a drag-to-look 360° viewer
 - ✅ **idle handling** — with no viewer the encoder is stopped (cool) and the
   next request brings the stream straight back; the device stays on the bus
-- ✅ zero-transcode mode (`--mode webcodecs`): server relays the camera's own
-  H.264 and the browser decodes it. Verified end to end — 129 access units /
-  2.53 MB in 4 s, keyframe every ~0.53 s, no ffmpeg process involved.
+- ✅ **low-CPU mode (`--mode fmp4`)**: the camera's own H.264 is remuxed, not
+  re-encoded, and played via MediaSource. Works over plain http.
+- ⚠️ `--mode webcodecs` also exists and costs even less, but `VideoDecoder`
+  requires a **secure context** — it is black over `http://<lan-ip>`. The page
+  now says so out loud instead of failing silently.
 
 Open:
 
@@ -84,7 +86,7 @@ physically plugged into the machine running this.
 | Python 3.8+ | the driver | distro `python3-usb` is enough; no venv required |
 | `libusb-1.0` | USB access | vendor-class device, no kernel driver binds it |
 | udev rule | unprivileged access | `tools/60-madv-mini.rules` |
-| `ffmpeg` | **only** for the MJPEG web demo | `--mode webcodecs` needs no ffmpeg at all |
+| `ffmpeg` | **only** for the MJPEG web demo | not installed by default; `--with-ffmpeg` to add it. Other modes need none |
 
 No compiler, no kernel module, no GPU, no bootloader work. x86_64, arm64 and
 armv7 all work — the driver is pure Python over libusb.
@@ -146,8 +148,9 @@ Two modes:
 
 | Mode | What runs | Cost |
 |---|---|---|
-| `mjpeg` (default) | server transcodes to MJPEG (`ffmpeg`) | works in any browser; the encode is the CPU cost |
-| `webcodecs` | server relays the camera's own H.264, **browser decodes** | near-zero server CPU, no ffmpeg needed; needs a modern browser |
+| `mjpeg` (default) | server transcodes to MJPEG | works in any browser; the encode is the entire CPU cost |
+| **`fmp4`** | server **remuxes** the camera's H.264 into fragmented MP4, browser plays it via MediaSource | near-zero CPU, works over plain http — **use this on an SBC** |
+| `webcodecs` | server relays raw H.264, browser decodes | zero CPU, but **secure context only** — black screen over `http://<lan-ip>` |
 
 The camera already emits H.264, so `webcodecs` is the right choice on an SBC.
 

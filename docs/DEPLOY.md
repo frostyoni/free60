@@ -9,13 +9,14 @@ A checklist for a human **or** an agent. If you are an agent, also read
 It is USB-tethered: no Wi-Fi, no Bluetooth, no battery. There is no remote
 path worth using — usbip round-trips badly enough to ruin a 30 fps bulk stream.
 
-Check it is there at all:
+Check it is there at all. Use the driver's own probe rather than `lsusb`,
+because **`lsusb` is often not installed on minimal Armbian/TVBox images**:
 
 ```bash
-lsusb -d 464a:4d02        # expect: ABILITY HA CAM
+python3 tools/madv.py probe      # works with pyusb only, no usbutils needed
 ```
 
-If that prints nothing, stop and plug it in.
+If that reports nothing found, stop and plug the camera in.
 
 ## 1. Get the repo onto the host
 
@@ -34,6 +35,10 @@ It installs libusb, makes pyusb importable (distro package, venv fallback),
 installs the udev rule, and probes for the camera. It never touches the
 camera's firmware.
 
+It does **not** install ffmpeg by default. Only `--mode mjpeg` needs it, and on
+a TVBox that is ~115 MB of packages on a small eMMC/SD root for a path you
+probably will not use. Add `--with-ffmpeg` if you want the mjpeg fallback.
+
 ## 3. Prove you can talk to it
 
 ```bash
@@ -49,19 +54,37 @@ If `probe` works but `info` fails, see *Troubleshooting* below.
 ## 4. Run the demo
 
 ```bash
-# strong host, or you want it to work in any browser
-<pybin> tools/madv-web.py --port 8901 --bind <lan-ip>
+# weak host (TV-box SoC): remux only, near-zero CPU, works over plain http
+<pybin> tools/madv-web.py --port 8901 --bind <lan-ip> --mode fmp4
 
-# weak host (TV-box SoC): no transcoding, the browser decodes
+# simplest, and it works in any browser - but it transcodes
+<pybin> tools/madv-web.py --port 8901 --bind <lan-ip>            # mjpeg
+
+# localhost or HTTPS ONLY - see the warning below
 <pybin> tools/madv-web.py --port 8901 --bind <lan-ip> --mode webcodecs
 ```
 
 Open `http://<lan-ip>:8901/`.
 
-Pick `webcodecs` on anything ARM. It ships the camera's own H.264 (about
-5 Mbit/s, no re-encode, near-zero CPU) instead of re-encoding to MJPEG (~17
-Mbit/s and a second lossy generation). It needs a browser with WebCodecs:
-Chrome/Edge 94+, Safari 16.4+, Firefox 130+. Otherwise use `mjpeg`.
+| mode | server cost | browser needs | works over plain http? |
+|---|---|---|---|
+| `fmp4` | remux only (`-c:v copy`) | MediaSource (everywhere) | **yes** |
+| `mjpeg` | full decode + JPEG encode | nothing | yes |
+| `webcodecs` | none | WebCodecs **and a secure context** | **no** |
+
+### WebCodecs needs HTTPS — this bites everyone
+
+`VideoDecoder` is exposed only in a **secure context**. On
+`http://<lan-ip>:8901` the API does not exist at all: the page renders black
+and only a console warning explains why. `localhost` counts as secure; a LAN
+address does not, and neither do phones or tablets on that address.
+
+Unless you front the server with HTTPS, **use `--mode fmp4`**. It hands the
+camera's own H.264 to MediaSource, costs the same near-zero CPU as WebCodecs,
+and has no secure-context requirement.
+
+MJPEG is the fallback that always works, at roughly 3x the bandwidth and real
+CPU cost — on an H616 that measured around 2.7 cores at 24 fps.
 
 ## 5. Open the port — and prove it from another host
 
@@ -112,7 +135,7 @@ Two things that catch people:
 
 | Symptom | Likely cause |
 |---|---|
-| `lsusb` shows nothing | not plugged into **this** host, or a dead port |
+| `probe` finds nothing | not plugged into **this** host, or a dead port |
 | `probe` finds it, no `/dev/sgN` | expected — vendor class, no kernel driver binds it |
 | `probe` finds it, `info` times out | camera is wedged → unplug/replug (no battery, no soft reset) |
 | `info` works, `live` silent | the camera is under-volted, or was never sent the settings block. Suspect the port first |

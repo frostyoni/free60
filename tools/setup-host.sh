@@ -3,24 +3,28 @@
 #
 # Idempotent: safe to re-run. Nothing here touches the camera's firmware.
 #
-#   ./tools/setup-host.sh --dry-run     show what would happen
-#   ./tools/setup-host.sh               do it
+#   ./tools/setup-host.sh --dry-run        show what would happen
+#   ./tools/setup-host.sh                  do it (no ffmpeg)
+#   ./tools/setup-host.sh --with-ffmpeg    also install ffmpeg (~115 MB)
 #
 # What it does:
 #   1. checks python3 (>=3.8) and libusb
 #   2. makes pyusb importable (distro package preferred, venv as fallback)
 #   3. installs the udev rule so a normal user can reach the camera
-#   4. notes whether ffmpeg is present (only needed for --mode mjpeg)
+#   4. notes whether ffmpeg is present. It is NOT installed by default: only
+#      --mode mjpeg needs it. Pass --with-ffmpeg to install it anyway.
 #   5. probes for the camera and prints the exact command to run next
 
 set -euo pipefail
 
 DRY=0
 ASSUME_YES=0
+WITH_FFMPEG=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run|-n) DRY=1 ;;
     --yes|-y)     ASSUME_YES=1 ;;
+    --with-ffmpeg) WITH_FFMPEG=1 ;;
     -h|--help)    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -112,14 +116,22 @@ if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c 'import usb.core' 2>/dev/n
 fi
 
 # ---------------------------------------------------------------- ffmpeg
-step "4. ffmpeg (optional)"
+step "4. ffmpeg"
 if command -v ffmpeg >/dev/null 2>&1; then
   ok "ffmpeg $(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')"
-else
-  warn "ffmpeg missing - fine for --mode webcodecs, required for --mode mjpeg"
+elif [ "$WITH_FFMPEG" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
     need_root; run $SUDO apt-get install -y ffmpeg
+    [ "$DRY" -eq 0 ] && ok "installed ffmpeg"
+  else
+    warn "install ffmpeg with your package manager"
   fi
+else
+  warn "ffmpeg not installed, and not installed by default"
+  say  "  only --mode mjpeg needs it: it decodes the camera's H.264 and"
+  say  "  re-encodes to JPEG, which costs CPU and ~3.5x the bandwidth."
+  say  "  --mode fmp4 and --mode webcodecs need no ffmpeg at all."
+  say  "  re-run with --with-ffmpeg if you want the mjpeg fallback."
 fi
 
 # ---------------------------------------------------------------- udev

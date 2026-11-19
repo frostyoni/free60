@@ -537,27 +537,45 @@ view when idle.
 does it automatically after `--idle-timeout` seconds with no viewer. Do not
 leave a unit streaming with nobody watching.
 
-### Zero-transcode streaming (`--mode webcodecs`)
+### Low-CPU streaming: `--mode fmp4`, and why `--mode webcodecs` failed
 
-The camera already emits H.264, so re-encoding it to MJPEG is wasted work —
-and on a cheap SBC it is the whole CPU cost. `tools/madv-web.py --mode webcodecs`
-skips ffmpeg entirely:
+The camera already emits H.264, so re-encoding it to MJPEG is wasted work — on
+an SBC it is the whole CPU cost. MJPEG measured **~2.7 cores at 24 fps on an
+H616**, against a source that needs only remuxing.
 
-- the capture thread publishes each access unit to subscriber queues
-- `GET /stream.h264` relays them as `[u32 LE length][annex-B access unit]`
-  over HTTP chunked encoding
-- the page feeds them to a **WebCodecs `VideoDecoder`**
-  (`avc1.640028`, `avc:{format:'annexb'}`, derived from the SPS:
-  profile `0x64`, constraints `0x00`, level `0x28`) and samples the decoded
-  canvas straight into the same 360 shader
+**`--mode fmp4` is the answer** (added after the first attempt at this failed):
 
-Server CPU drops to "copy bytes". Requires a browser with WebCodecs
-(Chrome/Edge 94+, Safari 16.4+, Firefox 130+); fall back to `--mode mjpeg`
-otherwise.
+- ffmpeg is told `-c:v copy` — no decode, no encode, just a remux
+- its fragmented-MP4 output is split into the init segment (`ftyp`+`moov`,
+  778 bytes) and whole `moof`+`mdat` fragments, ~200 ms each
+- `GET /stream.mp4` sends `[u32 LE length][segment]` records over chunked HTTP,
+  starting with the init segment
+- the page feeds them to `MediaSource` and samples the `<video>` straight into
+  the 360 shader. A late joiner's first fragment carries a large timestamp, so
+  the client jumps `currentTime` to `buffered.start(0)` on the first append
 
-Verified offline: the muxing path and codec string were checked against a
-captured stream, and the server/page start cleanly in this mode. **Not yet
-verified end-to-end against a live camera.**
+MediaSource has **no secure-context requirement**, so this works over plain
+`http://<lan-ip>` — which is the only thing phones and tablets will be using.
+
+#### The failure that taught me this
+
+`--mode webcodecs` shipped first: relay the access units, decode in the browser
+with `VideoDecoder` (`avc1.640028`, `avc:{format:'annexb'}`). The relay was
+verified (129 AUs / 2.53 MB in 4 s) and I called it done.
+
+It was not done. **`VideoDecoder` is exposed only in a secure context.** Over
+`http://<lan-ip>:8901` the constructor does not exist, the client hit a
+`console.warn` and returned, and the page rendered **black with no visible
+error** — on a tablet and a phone, which is exactly where it would be used.
+`localhost` counts as secure; a LAN address does not.
+
+That is the lesson worth keeping: "the server sends the right bytes" and "the
+browser paints them" are two different claims, and I only verified the first.
+The mode is kept because it is genuinely zero-cost where it works (localhost,
+or behind HTTPS), but it is no longer the recommended path.
+
+The client now shows an explicit on-screen message when the API is missing
+instead of failing silently.
 
 ### Still capture wedges the unit (open)
 
