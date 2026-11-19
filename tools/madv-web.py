@@ -700,54 +700,80 @@ function unsupported(msg){
 const vid = document.getElementById('vid');
 let fmp4Abort = null;
 
-function startFmp4(){
+async function fmp4Session(){
+  // One MediaSource + one HTTP stream, resolved when the stream ends.
+  return new Promise((resolve) => {
+    const ms = new MediaSource();
+    const url = URL.createObjectURL(ms);
+    let done = false;
+    const finish = () => {
+      if(done) return;
+      done = true;
+      try{ URL.revokeObjectURL(url); }catch(e){}
+      resolve();
+    };
+    vid.src = url;
+    ms.addEventListener('sourceopen', async () => {
+      let sb;
+      try{ sb = ms.addSourceBuffer('video/mp4; codecs="' + CODEC + '"'); }
+      catch(e){ unsupported('this browser cannot play ' + CODEC); finish(); return; }
+      const queue = [];
+      let busy = false, firstFrame = true;
+      const pump = () => {
+        if(busy || !queue.length || sb.updating) return;
+        busy = true;
+        try{ sb.appendBuffer(queue.shift()); }
+        catch(e){ busy = false; queue.length = 0; }
+      };
+      sb.addEventListener('updateend', () => {
+        busy = false;
+        // a late joiner's first fragment carries a large timestamp - jump to it
+        if(vid.buffered.length && vid.currentTime < vid.buffered.start(0)){
+          vid.currentTime = vid.buffered.start(0);
+        }
+        ready = true;
+        if(firstFrame){
+          // play() before sourceopen is rejected and the rejection was being
+          // swallowed, leaving a decoded-but-paused element
+          firstFrame = false;
+          vid.play().catch(()=>{});
+        }
+        pump();
+      });
+      fmp4Abort = new AbortController();
+      try{
+        const res = await fetch('/stream.mp4', {signal: fmp4Abort.signal});
+        const reader = res.body.getReader();
+        let buf = new Uint8Array(0);
+        while(true){
+          const {done: d, value} = await reader.read();
+          if(d) break;
+          const nb = new Uint8Array(buf.length + value.length);
+          nb.set(buf); nb.set(value, buf.length); buf = nb;
+          while(buf.length >= 4){
+            const len = new DataView(buf.buffer, buf.byteOffset).getUint32(0, true);
+            if(buf.length < 4 + len) break;
+            queue.push(buf.slice(4, 4+len));
+            buf = buf.slice(4+len);
+            pump();
+          }
+        }
+      }catch(e){ /* aborted on sleep */ }
+      finish();
+    });
+  });
+}
+
+async function startFmp4(){
   // MediaSource has no secure-context requirement, so unlike WebCodecs this
   // works over plain http on a LAN address - which is what phones and tablets
-  // will be using.
-  const ms = new MediaSource();
-  vid.src = URL.createObjectURL(ms);
-  ms.addEventListener('sourceopen', async () => {
-    let sb;
-    try{ sb = ms.addSourceBuffer('video/mp4; codecs="' + CODEC + '"'); }
-    catch(e){ unsupported('this browser cannot play ' + CODEC); return; }
-    const queue = [];
-    let busy = false;
-    const pump = () => {
-      if(busy || !queue.length || sb.updating) return;
-      busy = true;
-      try{ sb.appendBuffer(queue.shift()); }
-      catch(e){ busy = false; queue.length = 0; }
-    };
-    sb.addEventListener('updateend', () => {
-      busy = false;
-      // a late joiner's first fragment carries a large timestamp - jump to it
-      if(vid.buffered.length && vid.currentTime < vid.buffered.start(0)){
-        vid.currentTime = vid.buffered.start(0);
-      }
-      ready = true;
-      pump();
-    });
-    fmp4Abort = new AbortController();
-    try{
-      const res = await fetch('/stream.mp4', {signal: fmp4Abort.signal});
-      const reader = res.body.getReader();
-      let buf = new Uint8Array(0);
-      while(true){
-        const {done, value} = await reader.read();
-        if(done) break;
-        const nb = new Uint8Array(buf.length + value.length);
-        nb.set(buf); nb.set(value, buf.length); buf = nb;
-        while(buf.length >= 4){
-          const len = new DataView(buf.buffer, buf.byteOffset).getUint32(0, true);
-          if(buf.length < 4 + len) break;
-          queue.push(buf.slice(4, 4+len));
-          buf = buf.slice(4+len);
-          pump();
-        }
-      }
-    }catch(e){ /* aborted on sleep */ }
-  });
-  vid.play().catch(()=>{});
+  // will be using. Reconnects: the server closes the stream when it idles the
+  // encoder, and without this the page just froze until a manual reload.
+  while(!asleep){
+    await fmp4Session();
+    if(asleep) break;
+    await new Promise(r => setTimeout(r, 1000));
+  }
 }
 
 async function initStream(){
@@ -913,13 +939,15 @@ class Handler(BaseHTTPRequestHandler):
             sent = 0
             try:
                 last = None
+                last_send = time.time()
                 while True:
-                    cap.last_request = time.time()
                     with cap.cond:
                         if cap.latest is last:
                             cap.cond.wait(2.0)
                         jpg = cap.latest
                     if jpg is None or jpg is last:
+                        if not cap.streaming and time.time() - last_send > 5:
+                            return
                         continue
                     last = jpg
                     sent += 1
@@ -930,6 +958,8 @@ class Handler(BaseHTTPRequestHandler):
                           b"Content-Length: " + str(len(jpg)).encode() +
                           b"\r\n\r\n" + jpg + b"\r\n")
                     self.wfile.flush()
+                    cap.last_request = time.time()
+                    last_send = time.time()
             except (BrokenPipeError, ConnectionResetError):
                 return
         if path == "/stream.mp4":
@@ -949,19 +979,32 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 import struct as _s
                 sent_init = False
+                last_send = time.time()
                 while True:
                     if not sent_init and cap.mp4_init:
                         chunk(_s.pack("<I", len(cap.mp4_init)) + cap.mp4_init)
                         self.wfile.flush()
                         sent_init = True
+                        cap.last_request = time.time()
+                        last_send = time.time()
                     if not q:
                         time.sleep(0.004)
                         if not cap.running:
+                            break
+                        # The encoder was stopped (idle). Sit here forever and
+                        # the browser never sees EOF and never reconnects - that
+                        # is how one client ended up with three zombie sockets.
+                        if not cap.streaming and time.time() - last_send > 5:
                             break
                         continue
                     frag = q.popleft()
                     chunk(_s.pack("<I", len(frag)) + frag)
                     self.wfile.flush()
+                    # delivering a fragment IS a viewer. Refreshing only when
+                    # the request starts made every stream die at exactly
+                    # --idle-timeout seconds.
+                    cap.last_request = time.time()
+                    last_send = time.time()
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
@@ -984,15 +1027,20 @@ class Handler(BaseHTTPRequestHandler):
 
             try:
                 import struct as _s
+                last_send = time.time()
                 while True:
                     if not q:
                         time.sleep(0.004)
                         if not cap.running:
                             break
+                        if not cap.streaming and time.time() - last_send > 5:
+                            break
                         continue
                     au = q.popleft()
                     chunk(_s.pack("<I", len(au)) + au)
                     self.wfile.flush()
+                    cap.last_request = time.time()
+                    last_send = time.time()
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
