@@ -1,0 +1,18 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# large / regenerable reverse-engineering scratch
+src/                 # jadx decompilation of the APK (86 MB, regenerable)
+assets/work/         # unpacked APK (70 MB)
+assets/*.apk*
+capture/             # local test captures
+dump/                # raw protocol reply dumps
+
+# media scratch
+*.h264
+*.ppm
+
+# editor/session cache
+.opencode/

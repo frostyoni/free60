@@ -1,0 +1,2 @@
+# MADV Mini 360 camera (Sunplus SPCA6350, vendor-class BBB mass storage)
+SUBSYSTEM=="usb", ATTR{idVendor}=="464a", ATTR{idProduct}=="4d02", MODE="0660", GROUP="plugdev", TAG+="uaccess"
