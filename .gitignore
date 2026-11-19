@@ -20,3 +20,6 @@ dump/
 # media scratch
 *.h264
 *.ppm
+
+# internal notes: never published
+*.local.md
