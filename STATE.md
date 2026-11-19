@@ -418,3 +418,22 @@ the only reset**. Do that before assuming a regression.
 Still open: `photo` (full-res still download).
 
 Run it with the project venv: `./.venv/bin/python tools/madv.py live -n 5 -o out.h264`
+
+### Heat, and the correct way to stop
+
+The camera has no idle mode of its own. While live view is open the ISP and the
+H.264 encoder run continuously and the unit gets properly warm — that is
+expected, not a fault, and it is the single best argument for releasing the
+camera deliberately.
+
+Two levels, both confirmed to be accepted (`00`):
+
+| Action | Effect |
+|---|---|
+| `7A 01 02` stop live view | encoder stops, session still open |
+| `7A 00 02` close communication | session ends, camera drops to **power save** |
+| `7A 01 F0` power off | camera shuts down |
+
+`tools/madv.py sleep` does stop-live-view + close-session, and `tools/madv-web.py`
+does it automatically after `--idle-timeout` seconds with no viewer. Do not
+leave a unit streaming with nobody watching.

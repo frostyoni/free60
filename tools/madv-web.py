@@ -34,8 +34,9 @@ import madv
 # capture: USB -> ffmpeg -> latest MJPEG frame
 # =======================================================================
 class Capture:
-    def __init__(self, scale_width=1920, quality=5):
+    def __init__(self, scale_width=1920, quality=5, idle_timeout=60):
         self.scale_width = scale_width
+        self.idle_timeout = idle_timeout
         self.quality = quality
         self.latest = None            # latest JPEG bytes
         self.lock = threading.Lock()
@@ -48,6 +49,8 @@ class Capture:
         self.error = None
         self.running = True
         self._pending = None
+        self.last_request = time.time()
+        self.streaming = False
         self.latest_thumb = None
         self.last_shutter = None
         self.ff = None
@@ -137,10 +140,38 @@ class Capture:
 
         t_fps = time.time()
         frames_at = 0
+        self.last_request = time.time()
+        self.streaming = True          # _session() already started the stream
         try:
             while self.running:
                 if self._command(cam):
                     continue
+
+                idle = time.time() - self.last_request
+
+                if not self.streaming:
+                    if self.idle_timeout and idle > self.idle_timeout:
+                        time.sleep(0.2)
+                        continue
+                    print("[capture] waking", flush=True)
+                    cam.open_session()
+                    cam.start_stream(res=9)
+                    self.streaming = True
+                    frames_at = self.frames
+                    t_fps = time.time()
+                    continue
+
+                # nobody looking for a while: stop the encoder so it cools down
+                if self.idle_timeout and idle > self.idle_timeout:
+                    print(f"[capture] no viewer for {self.idle_timeout}s - "
+                          f"camera to power save", flush=True)
+                    try:
+                        cam.sleep()
+                    except Exception as e:
+                        print(f"[capture] sleep failed: {e}", flush=True)
+                    self.streaming = False
+                    continue
+
                 try:
                     fr = cam.get_frame()
                 except Exception:
@@ -480,17 +511,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "application/json", body)
 
         if path == "/frame.jpg":
+            cap.last_request = time.time()
             jpg = cap.wait_frame(3.0)
             if not jpg:
                 return self._send(503, "text/plain", b"no frame yet")
             return self._send(200, "image/jpeg", jpg)
 
         if path == "/api/snapshot.jpg":
+            cap.last_request = time.time()
             jpg = cap.wait_frame(3.0) or b""
             return self._send(200, "image/jpeg", jpg,
                               {"Content-Disposition": 'attachment; filename="madv-frame.jpg"'})
 
         if path == "/stream.mjpg":
+            cap.last_request = time.time()
             # HTTP/1.1 streaming needs explicit chunked framing, otherwise
             # clients sit waiting for a Content-Length that never comes.
             self.send_response(200)
@@ -511,6 +545,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 last = None
                 while True:
+                    cap.last_request = time.time()
                     with cap.cond:
                         if cap.latest is last:
                             cap.cond.wait(2.0)
@@ -538,7 +573,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if path == "/api/sleep":
+            self.capture.idle_timeout = 1   # force the idle path
+            self.capture.last_request = 0
+            return self._send(200, "application/json", b'{"ok":true}')
         if path == "/api/shutter":
+            self.capture.last_request = time.time()
             self.capture.request("shutter")
             return self._send(200, "application/json", b'{"ok":true}')
         return self._send(404, "text/plain", b"not found")
@@ -551,9 +591,13 @@ def main():
     ap.add_argument("--scale", type=int, default=1920,
                     help="downscale width for the web preview (0 = native)")
     ap.add_argument("--quality", type=int, default=5)
+    ap.add_argument("--idle-timeout", type=int, default=60,
+                    help="seconds with no viewer before the camera is put to "
+                         "sleep; 0 disables (the camera runs HOT while streaming)")
     args = ap.parse_args()
 
-    cap = Capture(scale_width=args.scale, quality=args.quality).start()
+    cap = Capture(scale_width=args.scale, quality=args.quality,
+                  idle_timeout=args.idle_timeout).start()
     Handler.capture = cap
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
     srv.daemon_threads = True

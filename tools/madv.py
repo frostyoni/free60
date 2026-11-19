@@ -587,6 +587,17 @@ class Camera:
         p, _ = self._call(_cdb(OP_CMD, CAT_CAMERA, 0xF0), rx_len=4096)
         return p[0] if p else None
 
+    def sleep(self):
+        """Stop streaming and close the session.
+
+        This is the correct way to leave the camera. `close_session` (7A 00 02)
+        puts it into power save; the ISP and H.264 encoder stop, which is what
+        actually makes the thing cool down. It wakes on the next
+        open communication.
+        """
+        st = self.stop_liveview()
+        return {"stop_liveview": st, "close_session": self.close_session()}
+
     def clear_picture_buffer(self):
         p, _ = self._call(_cdb(OP_CMD, CAT_CAMERA, 0x85), rx_len=4096)
         return p[0] if p else None
@@ -769,6 +780,24 @@ def cmd_record(args):
         cam.close_session()
 
 
+def cmd_sleep(args):
+    with open_transport(args) as t:
+        cam = Camera(t)
+        cam.open_session()
+        _say("sleep", cam.sleep())
+    print("camera in power save - ISP and encoder are off. "
+          "It wakes on the next open communication.")
+
+
+def cmd_poweroff(args):
+    with open_transport(args) as t:
+        cam = Camera(t)
+        cam.open_session()
+        _say("power off", cam.power_off())
+    print("camera powered down. It has no battery, so unplugging is the only "
+          "hard reset.")
+
+
 def cmd_dump(args):
     os.makedirs(args.out, exist_ok=True)
     probes = [
@@ -849,6 +878,9 @@ def main():
     p.add_argument("action", choices=["start", "stop"])
     p.add_argument("-r", "--res", type=int, default=9)
     p.set_defaults(func=cmd_record)
+
+    sub.add_parser("sleep").set_defaults(func=cmd_sleep)
+    sub.add_parser("poweroff").set_defaults(func=cmd_poweroff)
 
     p = sub.add_parser("dump")
     p.add_argument("-o", "--out", default="dump")

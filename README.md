@@ -93,6 +93,9 @@ ffplay live.h264
 Drag to look around, scroll/pinch to zoom, double-click to reset. There is also
 a "flat panorama" tab showing the raw 2:1 equirectangular frame.
 
+It stops streaming when nobody is watching (`--idle-timeout`, default 60 s) and
+wakes on the next request — see the heat note below.
+
 **Firewall note:** this fleet runs `nftables` (`inet <table>`). The port must be
 added to the input allow-list in `/etc/nftables.d/<table>.nft`, and the table
 reloaded **with a delete first** — `nft -f` on an existing table *appends* and
@@ -106,7 +109,7 @@ sudo nft delete table inet <table> && sudo nft -f /etc/nftables.d/<table>.nft
 
 | File | Purpose |
 |---|---|
-| `tools/madv.py` | host driver + CLI (probe/info/live/photo/thumb/shoot/record/raw/dump) |
+| `tools/madv.py` | host driver + CLI (probe/info/live/photo/thumb/shoot/record/sleep/poweroff/raw/dump) |
 | `tools/madv-web.py` | HTTP server + 360° browser demo |
 | `tools/axml.py` | standalone Android binary-XML parser (used to read the APK manifest) |
 | `tools/60-madv-mini.rules` | udev rule for `464a:4d02` |
@@ -138,6 +141,11 @@ last resort and has never been executed.
 
 ## Notes for the future
 
+- **The camera runs hot.** Streaming keeps the ISP and the H.264 encoder
+  running flat out, so a plug-in unit gets noticeably warm within minutes. It
+  is not a fault, but it is why `madv.py sleep` exists: stop live view and
+  close the session, and it drops to power save. Always leave it asleep rather
+  than merely idle.
 - The camera **wedges** after long experiment runs and stops answering. It has
   no battery, so a physical unplug/replug is the only reset.
 - `0xFF` in a reply means "asleep" — re-send open communication. The driver
