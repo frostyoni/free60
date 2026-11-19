@@ -196,14 +196,17 @@ have no console. There is also a **Sleep
 camera** button that does it immediately: its first job is to drop the page's
 own stream, because the server counts any viewer traffic as a reason to wake.
 
-**Firewall note:** this fleet runs `nftables` (`inet <table>`). The port must be
-added to the input allow-list in `/etc/nftables.d/<table>.nft`, and the table
-reloaded **with a delete first** — `nft -f` on an existing table *appends* and
-silently duplicates every rule:
+**Firewall note:** if the host runs a firewall, the port has to be allowed in
+before anything can reach it. On nftables, reload **with a delete first** —
+`nft -f` on an existing table *appends* and silently duplicates every rule, so
+packets end up both logged and allowed:
 
 ```bash
-sudo nft delete table inet <table> && sudo nft -f /etc/nftables.d/<table>.nft
+sudo nft delete table inet <table> && sudo nft -f <your-rules-file>.nft
 ```
+
+Then verify from **another host**. A listener on localhost proves nothing about
+the firewall or the LAN path.
 
 ### Tools
 
