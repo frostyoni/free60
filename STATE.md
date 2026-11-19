@@ -440,6 +440,38 @@ settings and it streams.**
 | source bitrate | **~5.06 Mbit/s** (129 AUs / 2.53 MB in 4 s) |
 | access unit size | ~19.6 KB average |
 | keyframe cadence | IDR every ~16 AUs = **~0.53 s**, SPS sent with each |
+| bitrate range in practice | **~4.8 Mbit/s** on a static scene, **~7.7 Mbit/s** with movement |
+
+**1920x960 is the live-view maximum, confirmed by trying all three ids.** The
+protocol enum advertises `11 = 3840x1920`, and the app maps UI index 1 to it —
+but the camera accepts id 11 and then delivers **1280x640**, i.e. it silently
+falls back rather than refusing. Measured:
+
+| res id | decoded | bitrate |
+|---|---|---|
+| 9 | 1920x960 | 4.79 Mbit/s |
+| 10 | 1280x640 | 3.68 Mbit/s |
+| 11 | **1280x640** (not 3840x1920) | 3.93 Mbit/s |
+
+So the 4K id in the enum is either for the still/record paths or not
+implemented on fw v1.1126. Nobody should spend time chasing it expecting 4K.
+
+### Where image artifacts come from
+
+In `--mode fmp4` the stream is **`-c:v copy`** — not re-encoded at all, so the
+viewer receives the camera's own bytes. Any artifact is therefore upstream of
+this project:
+
+| source | what it looks like |
+|---|---|
+| the camera's H.264 encoder, ~160 kbit/frame | blocking and smearing in motion and in low light |
+| low-light sensor noise plus its denoiser | waxy, detail-less shadows |
+| the in-camera stitch | the two bright arcs at the seam longitudes |
+| 210-degree fisheye stretched to equirect | softness towards the poles |
+
+`--mode mjpeg` is the one mode that **adds** a generation: ~5 Mbit/s of source
+becomes ~17 Mbit/s of JPEG, lossy again. If a comparison looks worse in mjpeg
+than in fmp4, that is the re-encode, not the camera.
 
 `bitrate` in the settings block (`7B 04 60`, byte `[35]`) is **not** a usable
 quality knob. Set it and streamed 3 s each time:
