@@ -4,15 +4,19 @@ __pycache__/
 *.pyc
 
 # large / regenerable reverse-engineering scratch
-src/                 # jadx decompilation of the APK (86 MB, regenerable)
-assets/work/         # unpacked APK (70 MB)
+# jadx decompilation of the APK (86 MB, regenerable)
+src/
+# unpacked APK (70 MB)
+assets/work/
+# the original APK itself (38 MB) - kept outside git
 assets/*.apk*
-capture/             # local test captures
-dump/                # raw protocol reply dumps
+# local test captures and raw protocol reply dumps
+capture/
+dump/
+
+# editor/session cache
+.opencode/
 
 # media scratch
 *.h264
 *.ppm
-
-# editor/session cache
-.opencode/
