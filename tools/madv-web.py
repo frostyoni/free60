@@ -82,6 +82,14 @@ class Capture:
             subs = list(self.subs)
         for q in subs:
             q.append(au)
+        now = time.time()
+        self.frames += 1
+        if self._fps_t0 is None:
+            self._fps_t0, self._fps_n = now, 0
+        self._fps_n += 1
+        if now - self._fps_t0 >= 2.0:
+            self.fps = self._fps_n / (now - self._fps_t0)
+            self._fps_t0, self._fps_n = now, 0
 
     # -- the ffmpeg encoder (H.264 in on stdin, JPEGs out on stdout) --
     def _spawn_ffmpeg(self):
@@ -325,7 +333,9 @@ PAGE = r"""<!doctype html>
 
 <div class="bar">
   <button id="shutter">Take picture</button>
-  <button id="snap">Save frame</button>
+  <button id="snap">Save panorama</button>
+  <button id="saveview">Save view</button>
+  <button id="fs">Fullscreen</button>
   <button id="spin">Auto-rotate</button>
   <button id="reset">Reset view</button>
   <button id="inv">Invert Y</button>
@@ -352,6 +362,20 @@ $('shutter').onclick = async () => {
   setTimeout(()=>{ b.textContent=t; }, 1400);
 };
 $('snap').onclick = () => { window.location = '/api/snapshot.jpg?t=' + Date.now(); };
+// save the current rectilinear view, not the raw equirect - this is what people
+// actually want to keep ("the thing I was looking at")
+$('saveview').onclick = () => {
+  try{
+    const a=document.createElement('a');
+    a.href=canvas.toDataURL('image/jpeg',0.92);
+    a.download='madv-view-'+new Date().toISOString().replace(/[:.]/g,'-')+'.jpg';
+    a.click();
+  }catch(e){ console.warn('save view failed', e); }
+};
+$('fs').onclick = () => {
+  if(document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen();
+};
 $('reset').onclick = () => { yaw=Math.PI; pitch=0; fovT=75; velYaw=0; velPitch=0; $('fov').value=75; };
 let invertY=false;
 try{ invertY = localStorage.getItem('madv-invertY')==='1'; }catch(e){}
