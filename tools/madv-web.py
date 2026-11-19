@@ -50,6 +50,7 @@ class Capture:
         self.lock = threading.Lock()
         self.cond = threading.Condition(self.lock)
         self.frames = 0
+        self.bytes_out = 0      # bytes actually written to viewers
         self.fps = 0.0
         self._fps_t0 = None
         self._fps_n = 0
@@ -408,6 +409,16 @@ PAGE = r"""<!doctype html>
  #hud{position:absolute;left:12px;bottom:12px;font:11px/1.4 ui-monospace,monospace;color:#9fb0c0;
       background:rgba(10,14,20,.55);padding:7px 10px;border-radius:8px;pointer-events:none}
  #err{color:#ff7b7b}
+ #stats{position:absolute;top:10px;right:10px;display:none;z-index:6;max-width:min(260px,calc(100% - 20px));
+        background:rgba(8,12,18,.80);border:1px solid #1e2530;border-radius:10px;padding:10px 12px;
+        font:11px/1.55 ui-monospace,monospace;color:#b9c6d4;pointer-events:none;
+        -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+ #stats .row{display:flex;justify-content:space-between;gap:14px}
+ #stats b{color:var(--acc);font-weight:600}
+ #stats .lbl,#stats .g .lbl{color:#6f7d8c;font-size:9px;letter-spacing:.08em;text-transform:uppercase}
+ #stats .row .lbl{color:#8b99a8;font-size:11px;letter-spacing:0;text-transform:none}
+ #stats .g{margin-top:7px}
+ #stats canvas{display:block;width:100%;height:26px;background:rgba(255,255,255,.03);border-radius:4px}
  #vid{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
       opacity:0;pointer-events:none;background:#000}
  #veil{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
@@ -456,6 +467,21 @@ PAGE = r"""<!doctype html>
   <canvas id="wc" style="display:none"></canvas>
   <video id="vid" muted playsinline></video>
   <div id="veil"><div>camera asleep &mdash; encoder off<br><span style="opacity:.7">click anywhere to wake</span></div></div>
+  <div id="stats">
+    <div class="row"><span class="lbl">stream</span><b id="s_mode">-</b></div>
+    <div class="row"><span>codec</span><b id="s_codec">-</b></div>
+    <div class="row"><span>server fps</span><b id="s_sfps">-</b></div>
+    <div class="row"><span>frames</span><b id="s_frames">-</b></div>
+    <div class="row"><span>bitrate</span><b id="s_rate">-</b></div>
+    <div class="row"><span>video</span><b id="s_res">-</b></div>
+    <div class="row"><span>readyState</span><b id="s_rs">-</b></div>
+    <div class="row"><span>buffered</span><b id="s_buf">-</b></div>
+    <div class="row"><span>dropped</span><b id="s_drop">-</b></div>
+    <div class="row"><span>sessions</span><b id="s_gen">-</b></div>
+    <div class="row"><span>canvas</span><b id="s_cv">-</b></div>
+    <div class="g"><div class="lbl">fps</div><canvas id="g_fps" width="240" height="26"></canvas></div>
+    <div class="g"><div class="lbl">mbit/s</div><canvas id="g_mb" width="240" height="26"></canvas></div>
+  </div>
   <div id="hud"><span id="diag" style="display:block;opacity:.65;margin-bottom:3px"></span>drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
 </div>
 
@@ -465,6 +491,7 @@ PAGE = r"""<!doctype html>
   <button id="saveview">Save view</button>
   <button id="fs">Fullscreen</button>
   <button id="sleep">Sleep camera</button>
+  <button id="statsBtn">Stats</button>
   <button id="spin">Auto-rotate</button>
   <button id="reset">Reset view</button>
   <button id="inv">Invert Y</button>
@@ -564,14 +591,77 @@ $('veil').onclick  = () => {
 $('spin').onclick = () => { spin=!spin; $('spin').classList.toggle('on', spin); };
 
 // ---------- status ----------
+let LAST=null, lastBytes=0, lastBytesT=0, CUR_MBPS=0;
 async function poll(){
   try{
     const j = await (await fetch('/api/info')).json();
     $('fw').textContent=j.fw_version||'-'; $('hw').textContent=j.hw_version||'-';
     $('fps').textContent=(j.fps||0).toFixed(0);
     if(j.error){ $('err').style.display=''; $('err').textContent=j.error; } else $('err').style.display='none';
+    // bitrate from bytes the server actually wrote, not an estimate
+    const now=performance.now(), b=j.bytes_out||0;
+    if(lastBytesT && now>lastBytesT){
+      CUR_MBPS=(b-lastBytes)*8/((now-lastBytesT)/1000)/1e6;
+      pushHist(histMb, CUR_MBPS);
+    }
+    lastBytes=b; lastBytesT=now; LAST=j;
+    pushHist(histFps, j.fps||0);
   }catch(e){}
 }
+
+// ---------- geek stats overplain ----------
+let statsOn=false;
+const HMAX=60, histFps=[], histMb=[];
+function pushHist(a,v){ a.push(v); if(a.length>HMAX) a.shift(); }
+function spark(cv, arr, stroke, fill){
+  const c=cv.getContext('2d'), w=cv.width, h=cv.height;
+  c.clearRect(0,0,w,h);
+  if(arr.length<2) return;
+  const mx=Math.max(1e-6, ...arr);
+  c.beginPath();
+  for(let i=0;i<arr.length;i++){
+    const x=(i/(HMAX-1))*w, y=h-1-(arr[i]/mx)*(h-4);
+    i?c.lineTo(x,y):c.moveTo(x,y);
+  }
+  c.strokeStyle=stroke; c.lineWidth=1.5; c.stroke();
+  c.lineTo(((arr.length-1)/(HMAX-1))*w, h); c.lineTo(0,h); c.closePath();
+  c.fillStyle=fill; c.fill();
+}
+function fmtN(v,d){ return (v===null||v===undefined||isNaN(v))?'-':Number(v).toFixed(d); }
+
+$('statsBtn').onclick = () => {
+  statsOn = !statsOn;
+  $('stats').style.display = statsOn ? 'block' : 'none';
+  $('statsBtn').classList.toggle('on', statsOn);
+};
+window.addEventListener('keydown', e => {
+  if((e.key==='s'||e.key==='S') && !e.metaKey && !e.ctrlKey) $('statsBtn').click();
+});
+
+function statsTick(){
+  if(!statsOn) return;
+  const j = LAST;
+  if(j){
+    $('s_mode').textContent   = j.mode || '-';
+    $('s_codec').textContent  = j.codec || '-';
+    $('s_sfps').textContent   = fmtN(j.fps,1);
+    $('s_frames').textContent = (j.frames ?? '-');
+    $('s_rate').textContent   = fmtN(CUR_MBPS,2) + ' Mbit/s';
+  }
+  $('s_res').textContent = vid.videoWidth ? vid.videoWidth+'\u00d7'+vid.videoHeight : '-';
+  $('s_rs').textContent  = vid.readyState + (vid.paused ? ' paused' : ' playing');
+  if(vid.buffered.length){
+    const s0=vid.buffered.start(0), e0=vid.buffered.end(vid.buffered.length-1);
+    $('s_buf').textContent = (e0-s0).toFixed(1)+'s  '+s0.toFixed(1)+'\u2192'+e0.toFixed(1);
+  } else $('s_buf').textContent = 'empty';
+  const q = vid.getVideoPlaybackQuality ? vid.getVideoPlaybackQuality() : null;
+  $('s_drop').textContent = q ? (q.droppedVideoFrames+' / '+q.totalVideoFrames) : '-';
+  $('s_gen').textContent  = fmp4Gen;
+  $('s_cv').textContent   = canvas.width+'\u00d7'+canvas.height+' @'+window.devicePixelRatio;
+  spark($('g_fps'), histFps, '#4fd1c5', 'rgba(79,209,197,.13)');
+  spark($('g_mb'),  histMb,  '#ffb86b', 'rgba(255,184,107,.13)');
+}
+setInterval(statsTick, 700);
 setInterval(poll,1000); poll();
 
 // ---------- equirectangular panorama viewer ----------
@@ -971,6 +1061,10 @@ class Handler(BaseHTTPRequestHandler):
                 "hw_version": cap.info.get("hw_version"),
                 "fps": round(cap.fps, 1),
                 "mode": cap.mode,
+                "bytes_out": cap.bytes_out,
+                "idle_timeout": cap.idle_timeout,
+                "streaming": cap.streaming,
+                "subscribers": len(cap.subs),
                 "codec": "avc1.640028",
                 "frames": cap.frames,
                 "error": cap.error,
@@ -1005,6 +1099,7 @@ class Handler(BaseHTTPRequestHandler):
 
             def chunk(data):
                 self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                cap.bytes_out += len(data)
 
             print(f"[stream] client attached, latest={'yes' if cap.latest else 'no'}",
                   flush=True)
@@ -1047,6 +1142,7 @@ class Handler(BaseHTTPRequestHandler):
 
             def chunk(data):
                 self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                cap.bytes_out += len(data)
 
             try:
                 import struct as _s
@@ -1096,6 +1192,7 @@ class Handler(BaseHTTPRequestHandler):
 
             def chunk(data):
                 self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+                cap.bytes_out += len(data)
 
             try:
                 import struct as _s
