@@ -1,5 +1,8 @@
 # Deploying free60 on a Linux host
 
+> Linux is the proven platform. macOS and Windows are expected to work but
+> untested — see the Portability table in the [README](../README.md).
+
 A checklist for a human **or** an agent. If you are an agent, also read
 [`AGENTS.md`](../AGENTS.md) — it lists the constraints you must not work around.
 

@@ -91,6 +91,30 @@ physically plugged into the machine running this.
 No compiler, no kernel module, no GPU, no bootloader work. x86_64, arm64 and
 armv7 all work — the driver is pure Python over libusb.
 
+## Portability
+
+| Platform | Status | Notes |
+|---|---|---|
+| Linux | **proven** | x86_64 (Debian/Ubuntu) and AArch64 (Armbian on S905X / S912 / H616 TV boxes) |
+| macOS | expected, **untested** | needs `libusb` and pyusb. No driver binding should be needed — the camera is vendor-class, so macOS has nothing that would claim it |
+| Windows | expected, **untested** | needs `libusb` plus a **WinUSB/libusbK driver bound to the camera** (Zadig). Windows has no driver for a class `0xff` device, so otherwise it sits there as an unknown device |
+
+The driver itself is portable by construction: pure Python over pyusb, building
+the USB Mass-Storage CBW/CSW envelope itself, with no kernel driver to satisfy.
+
+**Linux-only pieces**, and nothing else:
+
+- `tools/setup-host.sh` — apt and udev
+- `tools/60-madv-mini.rules` — udev
+- the `SG_IO` fallback transport — the default libusb transport is what
+  everything actually uses
+
+Trying it on Windows or macOS: install pyusb and libusb, run
+`python tools/madv.py probe`, then the web demo. The first thing I would expect
+to break is `os.read(ff.stdout.fileno())` in the capture loop — pipe semantics
+differ on Windows — and `--mode mjpeg` would be the mode to start with.
+Untested means untested, not "should be fine".
+
 ## Power and heat (read before trusting a port)
 
 The camera's USB descriptors claim **Self Powered** and `bMaxPower = 100 mA`.

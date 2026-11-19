@@ -30,12 +30,20 @@ Usage:
 
 import argparse
 import ctypes
-import fcntl
 import glob
 import os
 import struct
 import sys
 import time
+
+# fcntl is Unix-only and is needed by exactly one thing: the SG_IO fallback
+# transport. Importing it unconditionally made the whole driver fail to import
+# on Windows, which is a silly way to be non-portable when the real transport
+# is pyusb.
+try:
+    import fcntl
+except ImportError:            # Windows
+    fcntl = None
 
 # --- identity -----------------------------------------------------------
 VID_PID_KNOWN = [
@@ -209,6 +217,10 @@ class SgTransport:
     SG_DXFER_NONE, SG_DXFER_TO_DEV, SG_DXFER_FROM_DEV = -1, -2, -3
 
     def __init__(self, path, timeout_ms=2000):
+        if fcntl is None:
+            raise RuntimeError(
+                "the SG_IO transport is Linux-only; use the default libusb "
+                "transport (-t usb) on this platform")
         self.path, self.timeout_ms = path, timeout_ms
         self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
 
