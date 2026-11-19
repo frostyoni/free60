@@ -74,7 +74,10 @@ class UsbTransport:
 
     EP_OUT = 0x03
     EP_IN = 0x82
-    CHUNK = 16384
+    # One live-view access unit is ~19.6 KB plus a 13-byte CSW. At 16 KiB that
+    # took two bulk-reads per frame; 64 KiB gets the whole reply (and usually
+    # the CSW with it) in one, which is measurably cheaper in CPU.
+    CHUNK = 65536
 
     def __init__(self, vid=None, pid=None, bus=None, addr=None, timeout_ms=2000):
         import usb.core
