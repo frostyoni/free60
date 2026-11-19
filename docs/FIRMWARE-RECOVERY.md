@@ -1,8 +1,8 @@
-# Firmware recovery — what we know, and what we do not
+# Firmware recovery — what I know, and what I do not
 
 **Status: INCOMPLETE. Do not follow this as a procedure yet.**
 
-This page exists because we *hold* the camera's firmware, and holding it is
+This page exists because I *hold* the camera's firmware, and holding it is
 worthless if nobody records how it is meant to be used. It documents what has
 been recovered from the official app and what has been verified on hardware,
 and it is explicit about the gap.
@@ -23,7 +23,7 @@ a camera that merely refuses to stream.
 
 ---
 
-## What we hold
+## What I hold
 
 `firmware/fw11126.zip` — extracted from `res/raw/fw11126.zip` inside the last
 APK. The app shipped this so it could reflash a stale or bricked camera over
@@ -48,7 +48,7 @@ Only these two things:
 
 - `7A 01 83` (enter firmware-upgrade mode) is accepted, and polling
   `7A 02 83` returns `0`. The camera will enter the update state.
-- The unit reports `v1.1126`, matching the image we hold.
+- The unit reports `v1.1126`, matching the image I hold.
 
 Everything else below is **recovered from the app's code, not yet proven**.
 
@@ -72,7 +72,7 @@ it first:
 So the DRAM parameters carried inside the burn file are overridden by the
 per-board `.prm`. Sending the raw file would flash the wrong DRAM setup.
 
-**This patcher is not reimplemented yet.** Until it is, we do not have a
+**This patcher is not reimplemented yet.** Until it is, I do not have a
 byte-identical equivalent of what the official app sends.
 
 ---
@@ -118,7 +118,7 @@ treats the run as done once `sent_bytes >= file_size`.
 ## What is still needed
 
 1. Reimplement `C0034b` (the `.prm` patch) and prove it reproduces the app's
-   `FPUPDATE.tmp` for the image we hold.
+   `FPUPDATE.tmp` for the image I hold.
 2. Confirm the 64-byte "header blob" in the `7B 06 80` payload — where the app
    gets it is not yet pinned down.
 3. Actually run it — on a unit that is already dead, never on a working one.

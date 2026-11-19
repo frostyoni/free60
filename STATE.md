@@ -126,7 +126,7 @@ Response convention: `resp[0]` = status —
 | `7A 03 30` | camera status | `[8]` execution, `[9]` thermal |
 | `7A 03 34` | thermal status | |
 | `7A 03 35` | remaining shot count | u32 at `[8]` |
-| `7A 03 FF` | **keep-alive — every 500 ms, 10 misses = camera drops us** | |
+| `7A 03 FF` | **keep-alive — every 500 ms, 10 misses = camera drops me** | |
 
 ### Settings — category 0x04 (get = `7A`, set = `7B` + payload)
 | sub | Setting | Range |
@@ -159,7 +159,7 @@ Response convention: `resp[0]` = status —
 
 ---
 
-## 5. Firmware — we own it
+## 5. Firmware — I own it
 
 `res/raw/fw11126.zip` inside the APK is the **camera's own firmware**, shipped
 so the app could flash a bricked or old unit over USB. This is the insurance
@@ -182,32 +182,78 @@ zero padding):
 | `0x22590B5` | trailer |
 
 Not yet parsed: the region table that maps each image to a flash offset.
-That is the next firmware task, and it only matters if we ever reflash.
+That is the next firmware task, and it only matters if I ever reflash.
 
 ---
 
-## 6. Stitching — reproducible, we have the exact shaders
+## 6. Projection — the stream is ALREADY equirectangular
 
-`res/raw/` contains the actual GLSL the app used, so the projection is not lost:
+An earlier draft of this file called the live view "dual fisheye, stitched by
+the app". **That was wrong**, and it is worth recording why: I built a
+fisheye un-stitcher against that belief and produced garbage, then had to
+throw it away.
 
-- `video_stitch_fragment_shader_single.glsl` — **the real dual-fisheye stitch**:
-  the 1920×960 frame is split into a left eye at `(0.25,0.50)` and a right eye
-  at `(0.75,0.50)`, each sampled as a fisheye disk, blended with
-  `smoothstep` over `cfLOWER=0.45 … cfUPPER=0.55` (the seam), then
-  reprojected through a 3×3 rotation matrix `t_matrix`.
-- `video_stitch_fragment_shader_twins.glsl` — single-eye variant.
-- `player_360_*_shader.glsl` — equirect viewing.
+The measurements that settle it, taken on a real 1920x960 frame:
 
-Tunables (uniforms): `cfLensRatio`, `cfRatio`, `cfNormalizeX/Y`,
-`cfOffset0X/Y`, `cfOffset1X/Y`, `cfRotate0/1`, `t_matrix`.
-The numeric calibration values were **not** in the Java layer (no
-assignments found) — they come from the native `libViewController.so` /
-`libblender.so`. Recovering them is the remaining stitching task; failing that
-they can be re-derived by fitting a real capture.
+| test | result | meaning |
+|---|---|---|
+| column 0 vs column 1919 | mean abs diff **3.5** | the image wraps horizontally — same direction at both edges |
+| column 0 vs column 959 | mean abs diff **97** | the two halves are *not* the same scene |
+| row 0 across its width | stdev **3.9** | a near-uniform pole, as an equirect zenith must be |
+
+Then confirmed visually: rendering a rectilinear view with
+`u = atan2(x,z)/2pi + 0.5`, `v = 0.5 - asin(y)/pi` produces an ordinary
+photograph, not a warped mess. And 1920x960 is 2:1, the classic equirect aspect.
+
+So **the camera stitches in-camera**. There is nothing to un-stitch, and the
+app's GLSL is not the live-view path.
+
+### Then what are the bundled shaders for?
+
+They are still in `res/raw/` and they are not junk:
+
+- `video_stitch_fragment_shader_single.glsl` — a **dual-fisheye to equirect**
+  converter: two eyes at UV `(0.25,0.50)` and `(0.75,0.50)`, fisheye radius
+  scaled `0.5` in u and `1.0` in v, seam blended with `smoothstep` between
+  `cfLOWER=0.45` and `cfUPPER=0.55`, through a 3x3 `t_matrix`.
+- `video_stitch_fragment_shader_twins.glsl` — a single-eye variant.
+- `player_360_*_shader.glsl` — a trivial passthrough (`texture2D(sTexture, v)`),
+  i.e. the equirect is sampled directly for viewing. More evidence for the
+  conclusion above.
+
+Most likely division of labour: the **camera** stitches live view, and the
+**app** stitches saved stills/video — consistent with the photo path carrying a
+vendor tag the app rewrites before saving.
+
+The uniforms (`cfLensRatio`, `cfRatio`, `cfNormalizeX/Y`, `cfOffset0X/Y`,
+`cfOffset1X/Y`, `cfRotate0/1`, `t_matrix`) have no assignments anywhere in the
+Java layer; those values live in the native `libViewController.so` /
+`libblender.so`. They only matter if the full-resolution still turns out to be
+dual fisheye — which is still unknown, because that download never completes.
+
+### Two projection bugs I shipped, recorded so they are not repeated
+
+Both were in the web viewer, both are classic:
+
+1. **Unnormalised view ray.** `atan2` is scale-invariant so longitude was fine,
+   but `asin(d.y)` is not — off-axis the ray exceeds 1.0, the clamp bites, and
+   the panorama stretches vertically away from the centre. This was a large
+   part of the "heavily distorted" report.
+2. **Wrong rotation order.** Yaw-then-pitch-about-world-X (`Rx*Ry`) instead of
+   pitch-about-local-X-then-yaw (`Ry*Rx`). Measured with drag-down:
+
+   | yaw | 0 | 90 | 180 | 270 |
+   |---|---|---|---|---|
+   | `Rx*Ry` | ok | y=0 | +0.48 | y=0 |
+   | `Ry*Rx` | ok | ok | ok | ok |
+
+   At 90/270 vertical motion vanished entirely and the view just circled; at
+   180 it inverted, so dragging down moved the scene up. Any look-around camera
+   needs `Ry*Rx`.
 
 ---
 
-## 7. What is dead vs. what we do not need
+## 7. What is dead vs. what I do not need
 
 Dead: `api.madv360.com:9999` (app update/EULA), Google Play listing, WeChat /
 Weibo / Facebook share SDKs, Firebase.
@@ -275,7 +321,7 @@ serial `123456789ABC`. Full speed 480 Mb/s.
   MODE="0660", GROUP="plugdev", TAG+="uaccess"`)
 
 **Firmware on the unit: `v1.1126`** — exactly the version bundled in the APK
-(`res/raw/fw11126.zip` = fw 1.1126). The unit is up to date; the firmware we
+(`res/raw/fw11126.zip` = fw 1.1126). The unit is up to date; the firmware I
 hold is authentic for this hardware.
 
 ### Reply layouts, corrected by experiment
@@ -373,8 +419,38 @@ settings and it streams.**
   - `[4]` resolution id (9/10/11)
   - `[28:32]` **payload length, LITTLE-endian**
   - `[32:]` H.264 Annex-B access unit (start code `00 00 00 01` at 32)
-- 1920 x 960 = the two 960 x 960 fisheyes side by side, exactly as the GLSL
-  shader in §6 predicted.
+- 1920 x 960 is an **equirectangular panorama, stitched in-camera** — see §6.
+
+### Video characteristics — measured, not guessed
+
+| quantity | value |
+|---|---|
+| resolution | 1920x960, native (frame header `[4]` = 9) |
+| frame rate | ~30 fps (96-98 access units per 3 s) |
+| source bitrate | **~5.06 Mbit/s** (129 AUs / 2.53 MB in 4 s) |
+| access unit size | ~19.6 KB average |
+| keyframe cadence | IDR every ~16 AUs = **~0.53 s**, SPS sent with each |
+
+`bitrate` in the settings block (`7B 04 60`, byte `[35]`) is **not** a usable
+quality knob. Set it and streamed 3 s each time:
+
+| set to | 8 | 20 | 50 | 100 | 200 |
+|---|---|---|---|---|---|
+| measured | 4.89 | 5.45 | 5.30 | **1.58** | 5.24 Mbit/s |
+
+Non-monotonic — 100 collapses to a third of the rest. There is no reliable way
+to raise the camera's own quality, so the app's value of 8 is as good as any,
+and a quality slider would be a lie.
+
+Cost of the two host-side paths on the same stream:
+
+| path | bandwidth | server CPU |
+|---|---|---|
+| `--mode mjpeg` | **~17.4 Mbit/s** | ffmpeg decode + MJPEG encode |
+| `--mode webcodecs` | **~5.06 Mbit/s** | copy bytes only |
+
+MJPEG costs 3.5x the bandwidth *and* adds a second lossy generation. That is the
+entire argument for `--mode webcodecs`.
 
 ### Thumbnail: WORKING
 

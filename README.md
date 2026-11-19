@@ -58,14 +58,14 @@ Working, verified against real hardware:
 Open:
 
 - ⬜ full-resolution still download (`7A 05 02` still answers "busy"). Worse,
-  On the current unit a still capture has twice **wedged the camera** part-way
+  on the current unit a still capture has twice **wedged the camera** part-way
   through — it stays on the bus (`lsusb` still shows it) but every command
   times out, and only a replug clears it. A USB extension lead was initially
   suspected and has since been cleared: the same unit streams at a steady
   30 fps through it. Treat the wedge as an unexplained firmware behaviour
   until someone reproduces it with instrumentation.
 - ⬜ video recording (`7A 01 03`) — command accepted, untested end-to-end
-- ⬜ firmware reflash path — we hold the exact image and the recovered
+- ⬜ firmware reflash path — I hold the exact image and the recovered
   protocol, but the `.prm` patch step is not reimplemented and nothing has
   been flashed. See [docs/FIRMWARE-RECOVERY.md](docs/FIRMWARE-RECOVERY.md)
 

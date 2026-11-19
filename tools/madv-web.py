@@ -95,7 +95,7 @@ class Capture:
     def _spawn_ffmpeg(self):
         vf = f"scale={self.scale_width}:-2" if self.scale_width else None
         # NOTE: -vsync 0 is required (image2pipe mjpeg dedupes to ~2 frames
-        # without it).  Do not use -probesize/-analyzeduration here: we join
+        # without it).  Do not use -probesize/-analyzeduration here: I join
         # the H.264 stream mid-flight and a tiny probe size makes ffmpeg
         # give up.  -err_detect ignore_err keeps it alive across the
         # occasional dropped access unit.

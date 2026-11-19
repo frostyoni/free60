@@ -185,7 +185,7 @@ class UsbTransport:
 
 
 # =======================================================================
-# transport: /dev/sgN + SG_IO (kernel builds the CBW/CSW for us)
+# transport: /dev/sgN + SG_IO (kernel builds the CBW/CSW for me)
 # =======================================================================
 SG_IO = 0x2285
 
@@ -417,7 +417,7 @@ class Camera:
                 self._last_ka = time.time()
                 return True
             if st == ST_BUSY and attempt >= 1:
-                # already open - the camera is happy to serve us
+                # already open - the camera is happy to serve me
                 self._last_ka = time.time()
                 self.already_open = True
                 return True
