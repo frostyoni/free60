@@ -199,8 +199,10 @@ class Capture:
 
                 # nobody looking for a while (or asked): stop the encoder so it cools down
                 if self.sleep_now or (self.idle_timeout and idle > self.idle_timeout):
-                    print(f"[capture] no viewer for {self.idle_timeout}s - "
-                          f"encoder off (session kept open)", flush=True)
+                    why = ("sleep requested" if self.sleep_now
+                           else f"no viewer for {self.idle_timeout}s")
+                    print(f"[capture] {why} - encoder off "
+                          f"(session kept open)", flush=True)
                     try:
                         # stop live view ONLY.  close_session (7A 00 02) makes
                         # the camera power down and drop off the USB bus
@@ -307,6 +309,9 @@ PAGE = r"""<!doctype html>
  #hud{position:absolute;left:12px;bottom:12px;font:11px/1.4 ui-monospace,monospace;color:#9fb0c0;
       background:rgba(10,14,20,.55);padding:7px 10px;border-radius:8px;pointer-events:none}
  #err{color:#ff7b7b}
+ #veil{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+       text-align:center;background:rgba(6,9,13,.86);color:#9fb0c0;
+       font:13px/1.7 ui-monospace,monospace;cursor:pointer;z-index:5}
  .bar{display:flex;gap:10px;align-items:center;padding:8px 14px;border-top:1px solid #1e2530;flex:0 0 auto}
  label.s{display:flex;gap:6px;align-items:center;color:var(--dim);font-size:12px}
  input[type=range]{width:110px;accent-color:var(--acc)}
@@ -328,6 +333,7 @@ PAGE = r"""<!doctype html>
   <img id="flat" src="/stream.mjpg" alt="panorama">
   <canvas id="flatwc" style="display:none;width:100%;height:100%;object-fit:contain;background:#000"></canvas>
   <canvas id="wc" style="display:none"></canvas>
+  <div id="veil"><div>camera asleep &mdash; encoder off<br><span style="opacity:.7">click anywhere to wake</span></div></div>
   <div id="hud">drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
 </div>
 
@@ -336,6 +342,7 @@ PAGE = r"""<!doctype html>
   <button id="snap">Save panorama</button>
   <button id="saveview">Save view</button>
   <button id="fs">Fullscreen</button>
+  <button id="sleep">Sleep camera</button>
   <button id="spin">Auto-rotate</button>
   <button id="reset">Reset view</button>
   <button id="inv">Invert Y</button>
@@ -385,6 +392,34 @@ $('inv').onclick = () => { invertY=!invertY;
   syncInv(); };
 syncInv();
 let spin=false;
+
+// ---- sleep / wake ----
+// Stopping the stream client-side first is essential: the server treats any
+// /frame.jpg or /stream.mjpg traffic as a viewer and would wake the camera
+// straight back up.
+let asleep = false;
+function setAsleep(v){
+  asleep = v;
+  $('sleep').textContent = v ? 'Wake camera' : 'Sleep camera';
+  $('sleep').classList.toggle('on', v);
+  $('veil').style.display = v ? 'flex' : 'none';
+}
+async function goSleep(){
+  setAsleep(true);
+  $('flat').removeAttribute('src');          // drop the mjpeg connection
+  if(h264Abort){ h264Abort.abort(); h264Abort=null; }
+  if(decoder){ try{ decoder.close(); }catch(e){} decoder=null; }
+  try{ await fetch('/api/sleep', {method:'POST'}); }catch(e){}
+}
+async function wakeUp(){
+  setAsleep(false);
+  try{ await fetch('/frame.jpg?t='+Date.now()); }catch(e){}   // triggers the wake
+  if(srcMode==='webcodecs'){ startWebCodecs().catch(()=>{}); }
+  else { $('flat').src='/stream.mjpg'; }
+  grab();
+}
+$('sleep').onclick = () => { asleep ? wakeUp() : goSleep(); };
+$('veil').onclick  = () => { if(asleep) wakeUp(); };
 $('spin').onclick = () => { spin=!spin; $('spin').classList.toggle('on', spin); };
 
 // ---------- status ----------
@@ -535,14 +570,14 @@ const img=new Image();
 let ready=false, busy=false, srcMode='mjpeg';
 img.onload = ()=>{ ready=true; busy=false; };
 img.onerror = ()=>{ busy=false; };
-function grab(){ if(srcMode!=='mjpeg'||mode!=='360'||busy) return; busy=true; img.src='/frame.jpg?t='+Date.now(); }
+function grab(){ if(asleep||srcMode!=='mjpeg'||mode!=='360'||busy) return; busy=true; img.src='/frame.jpg?t='+Date.now(); }
 
 // ---- WebCodecs path: the camera already sends H.264, so let the browser decode it ----
 const wcCanvas=document.getElementById('wc');
 const wcCtx=wcCanvas.getContext('2d',{willReadFrequently:false});
 const flatwc=document.getElementById('flatwc');
 const flatwcCtx=flatwc.getContext('2d');
-let decoder=null, CODEC='avc1.640028';
+let decoder=null, CODEC='avc1.640028', h264Abort=null;
 
 function isKeyFrame(au){
   for(let i=0;i+4<au.length;i++){
@@ -580,11 +615,17 @@ async function startWebCodecs(){
 }
 
 async function pumpH264(){
-  const res=await fetch('/stream.h264');
+  if(h264Abort) h264Abort.abort();
+  h264Abort = new AbortController();
+  let res;
+  try{ res = await fetch('/stream.h264', {signal:h264Abort.signal}); }
+  catch(e){ return; }
   const reader=res.body.getReader();
   let buf=new Uint8Array(0), ts=0;
   while(true){
-    const {done,value}=await reader.read();
+    let chunk;
+    try{ chunk = await reader.read(); }catch(e){ break; }
+    const {done,value} = chunk;
     if(done) break;
     const nb=new Uint8Array(buf.length+value.length); nb.set(buf); nb.set(value,buf.length); buf=nb;
     while(buf.length>=4){
@@ -616,7 +657,7 @@ function draw(now){
     }
     if(spin) yaw += dt*0.25;
   }
-  grab();                       // keep fetching even before the first frame lands
+  if(!asleep) grab();           // keep fetching even before the first frame lands
   if(mode!=='360'||!ready) return;
   const w=canvas.clientWidth||960, h=canvas.clientHeight||480;
   if(canvas.width!==w||canvas.height!==h){ canvas.width=w; canvas.height=h; }

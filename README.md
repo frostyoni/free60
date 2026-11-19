@@ -154,7 +154,9 @@ Drag to look around, scroll/pinch to zoom, double-click to reset. There is also
 a "flat panorama" tab showing the raw 2:1 equirectangular frame.
 
 It stops streaming when nobody is watching (`--idle-timeout`, default 60 s) and
-wakes on the next request — see the heat note below.
+wakes on the next request — see the heat note below. There is also a **Sleep
+camera** button that does it immediately: its first job is to drop the page's
+own stream, because the server counts any viewer traffic as a reason to wake.
 
 **Firewall note:** this fleet runs `nftables` (`inet <table>`). The port must be
 added to the input allow-list in `/etc/nftables.d/<table>.nft`, and the table
