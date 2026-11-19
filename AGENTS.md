@@ -44,8 +44,10 @@ Then choose a mode:
    first — `nft -f` on an existing table *appends* and silently duplicates
    every rule:
    ```bash
-   sudo nft delete table inet <table> && sudo nft -f /etc/nftables.d/<table>.nft
+   sudo nft delete table inet <table> && sudo nft -f <your-rules-file>.nft
    ```
+   (The fleet's concrete table name and rules path are in the host's own
+   deployment notes, deliberately not in this public repo.)
 4. **Verify from another host, not locally.** A listener proves nothing about
    the firewall or the LAN path.
 5. **udev `uaccess` does not apply to systemd services.** If running as a
