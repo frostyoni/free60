@@ -413,9 +413,29 @@ PAGE = r"""<!doctype html>
  #veil{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
        text-align:center;background:rgba(6,9,13,.86);color:#9fb0c0;
        font:13px/1.7 ui-monospace,monospace;cursor:pointer;z-index:5}
- .bar{display:flex;gap:10px;align-items:center;padding:8px 14px;border-top:1px solid #1e2530;flex:0 0 auto}
+ .bar{display:flex;gap:10px;align-items:center;padding:8px 14px;border-top:1px solid #1e2530;
+       flex:0 0 auto;flex-wrap:wrap}
  label.s{display:flex;gap:6px;align-items:center;color:var(--dim);font-size:12px}
  input[type=range]{width:110px;accent-color:var(--acc)}
+ @media (max-width: 640px){
+   header{padding:8px 10px;gap:6px}
+   h1{display:none}                       /* the tabs already say what this is */
+   .pill{font-size:10px;padding:3px 6px}
+   /* one scrollable row instead of five: keeps the viewport for the picture */
+   .bar{padding:6px 8px;gap:6px;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+        -webkit-overflow-scrolling:touch;scrollbar-width:none}
+   .bar::-webkit-scrollbar{display:none}
+   .bar > *{flex:0 0 auto}
+   .bar button{padding:6px 10px;font-size:12px}
+   label.s{font-size:11px}
+   input[type=range]{width:84px}
+   #hud{font-size:10px;padding:5px 7px;left:8px;bottom:8px;max-width:calc(100% - 16px)}
+   #veil{font-size:12px}
+ }
+ @media (max-width: 380px){
+   .pill{font-size:9px}
+   .bar button{padding:5px 8px;font-size:11px}
+ }
 </style></head><body>
 
 <header>
