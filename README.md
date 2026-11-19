@@ -91,6 +91,9 @@ physically plugged into the machine running this.
 No compiler, no kernel module, no GPU, no bootloader work. x86_64, arm64 and
 armv7 all work — the driver is pure Python over libusb.
 
+Why Python rather than Rust: **[docs/DESIGN.md](docs/DESIGN.md)** — including
+the measurements that say where Python is the wrong answer.
+
 ## Portability
 
 | Platform | Status | Notes |
@@ -182,7 +185,14 @@ Drag to look around, scroll/pinch to zoom, double-click to reset. There is also
 a "flat panorama" tab showing the raw 2:1 equirectangular frame.
 
 It stops streaming when nobody is watching (`--idle-timeout`, default 60 s) and
-wakes on the next request — see the heat note below. There is also a **Sleep
+wakes on the next request — see the heat note below.
+
+Press **Stats** (or `s`) for a transparent panel with the numbers: mode, codec,
+server fps, frame count, a real byte-rate measured from what the server wrote,
+resolution, readyState, buffered range, dropped frames, reconnect count — plus
+sparklines for fps and bitrate. It reads exposed state rather than inventing
+it, so it doubles as the debugging surface when something looks wrong and you
+have no console. There is also a **Sleep
 camera** button that does it immediately: its first job is to drop the page's
 own stream, because the server counts any viewer traffic as a reason to wake.
 
