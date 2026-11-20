@@ -425,6 +425,10 @@ PAGE = r"""<!doctype html>
  #hud{position:absolute;left:12px;bottom:12px;font:11px/1.4 ui-monospace,monospace;color:#9fb0c0;
       background:rgba(10,14,20,.55);padding:7px 10px;border-radius:8px;pointer-events:none}
  #err{color:#ff7b7b}
+ #banner{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:none;z-index:7;
+         background:rgba(110,38,38,.92);color:#ffe9e9;padding:7px 14px;border-radius:8px;
+         font:11px/1.4 ui-monospace,monospace;pointer-events:none;max-width:calc(100% - 20px);
+         text-align:center}
  #stats{position:absolute;top:10px;right:10px;display:none;z-index:6;max-width:min(260px,calc(100% - 20px));
         background:rgba(8,12,18,.80);border:1px solid #1e2530;border-radius:10px;padding:10px 12px;
         font:11px/1.55 ui-monospace,monospace;color:#b9c6d4;pointer-events:none;
@@ -501,11 +505,12 @@ PAGE = r"""<!doctype html>
     <div class="g"><div class="lbl">fps</div><canvas id="g_fps" width="240" height="26"></canvas></div>
     <div class="g"><div class="lbl">mbit/s</div><canvas id="g_mb" width="240" height="26"></canvas></div>
   </div>
+  <div id="banner"></div>
   <div id="hud"><span id="diag" style="display:block;opacity:.65;margin-bottom:3px"></span>drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
 </div>
 
 <div class="bar">
-  <button id="shutter">Take picture</button>
+  <button id="shutter" title="capture writes into the camera; full-resolution download is not implemented, so this cannot give you a usable photo yet">Take picture</button>
   <button id="snap">Save panorama</button>
   <button id="saveview">Save view</button>
   <button id="fs">Fullscreen</button>
@@ -537,9 +542,13 @@ $('tab_flat').onclick = () => { mode='flat'; $('tab_flat').classList.add('on'); 
   if(srcMode==='webcodecs'){ flatwc.width=wcCanvas.width||1; flatwc.height=wcCanvas.height||1; } };
 
 $('shutter').onclick = async () => {
-  const b=$('shutter'); const t=b.textContent; b.textContent='Capturing...';
+  const b=$('shutter');
+  if(b.disabled) return;
+  b.disabled = true; b.textContent = 'Capturing...';
   try { await fetch('/api/shutter', {method:'POST'}); } catch(e){}
-  setTimeout(()=>{ b.textContent=t; }, 1400);
+  // capture resets the camera on marginal power, so give it a cooldown rather
+  // than letting it be pressed repeatedly while the link is down
+  setTimeout(()=>{ b.textContent='Take picture'; b.disabled=false; }, 15000);
 };
 $('snap').onclick = () => { window.location = '/api/snapshot.jpg?t=' + Date.now(); };
 // save the current rectilinear view, not the raw equirect - this is what people
@@ -690,6 +699,17 @@ function statsTick(){
   spark($('g_mb'),  histMb,  '#ffb86b', 'rgba(255,184,107,.13)');
 }
 setInterval(statsTick, 700);
+
+setInterval(() => {
+  const stale = (performance.now() - lastFrameAt) > 2500;
+  const b = $('banner');
+  if(stale && !asleep){
+    b.textContent = 'camera not sending frames — reconnecting…';
+    b.style.display = 'block';
+  } else {
+    b.style.display = 'none';
+  }
+}, 500);
 setInterval(poll,1000); poll();
 
 // ---------- equirectangular panorama viewer ----------
@@ -827,7 +847,7 @@ canvas.addEventListener('touchend', ()=>{ pinch=null; });
 
 const img=new Image();
 let ready=false, busy=false, srcMode='mjpeg', frames=0;
-img.onload = ()=>{ ready=true; busy=false; };
+img.onload = ()=>{ ready=true; busy=false; noteFrame(); };
 img.onerror = ()=>{ busy=false; };
 function grab(){ if(asleep||srcMode!=='mjpeg'||mode!=='360'||busy) return; busy=true; img.src='/frame.jpg?t='+Date.now(); }
 
@@ -975,6 +995,7 @@ async function initStream(){
       if(wcCanvas.width!==f.displayWidth){ wcCanvas.width=f.displayWidth; wcCanvas.height=f.displayHeight; }
       wcCtx.drawImage(f,0,0);
       ready=true;
+      noteFrame();
       if(mode==='flat'){ flatwc.width=wcCanvas.width; flatwc.height=wcCanvas.height;
                          flatwcCtx.drawImage(wcCanvas,0,0); }
       f.close();
@@ -1013,6 +1034,8 @@ async function pumpH264(){
 }
 
 let last=performance.now(), lastDiag=0;
+let lastFrameAt=performance.now(), lastVidT=-1;
+function noteFrame(){ lastFrameAt=performance.now(); }
 function draw(now){
   requestAnimationFrame(draw);
   const dt=Math.min(0.05,(now-last)/1000); last=now;
@@ -1027,6 +1050,9 @@ function draw(now){
       pitch=Math.max(-PITCH_MAX,Math.min(PITCH_MAX,pitch));
     }
     if(spin) yaw += dt*0.25;
+  }
+  if(srcMode==='fmp4' && vid.currentTime !== lastVidT){
+    lastVidT = vid.currentTime; noteFrame();
   }
   if(!asleep) grab();           // keep fetching even before the first frame lands
   if(now - lastDiag > 500){

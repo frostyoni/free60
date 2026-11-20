@@ -48,8 +48,8 @@ Working, verified against real hardware:
 - ✅ all settings read/write, date/time
 - ✅ **live view — H.264 1920×960 @ ~30 fps**, decodes cleanly
 - ✅ thumbnail download (272×272 JPEG)
-- ⚠️ still capture **trigger** — accepted and completes in ~1 s, but has
-  wedged the unit twice. See the open item below
+- ⚠️ still capture **trigger** — the camera accepts it, but this cannot give
+  you a usable photo yet. See the open item below
 - ✅ browser demo with a drag-to-look 360° viewer
 - ✅ **idle handling** — with no viewer the encoder is stopped (cool) and the
   next request brings the stream straight back; the device stays on the bus
@@ -61,13 +61,18 @@ Working, verified against real hardware:
 
 Open:
 
-- ⬜ full-resolution still download (`7A 05 02` still answers "busy"). Worse,
-  on the current unit a still capture has twice **wedged the camera** part-way
-  through — it stays on the bus (`lsusb` still shows it) but every command
-  times out, and only a replug clears it. A USB extension lead was initially
-  suspected and has since been cleared: the same unit streams at a steady
-  30 fps through it. Treat the wedge as an unexplained firmware behaviour
-  until someone reproduces it with instrumentation.
+- ⬜ **photographs, end to end.** This is the big one, and it is worth being
+  blunt: pressing capture stores an image **inside the camera**, and the
+  command that reads it back (`7A 05 02`) has never returned a single byte. The
+  only image ever recovered from a capture is a **272x272 thumbnail**. So there
+  is no "save location" to report — there is no working download.
+
+  On the test unit capture also **resets the USB connection**: dmesg shows a
+  disconnect and re-enumeration at the moment of capture, three times in one
+  session, with no over-current report. The service recovers on its own in a
+  few seconds (or `tools/recover.sh` forces it). A current spike on a marginal
+  port is the leading suspicion — capture worked on a direct port and stopped
+  working behind an extension — but that is unproven.
 - ⬜ video recording (`7A 01 03`) — command accepted, untested end-to-end
 - ⬜ firmware reflash path — I hold the exact image and the recovered
   protocol, but the `.prm` patch step is not reimplemented and nothing has
