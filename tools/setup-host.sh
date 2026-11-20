@@ -7,6 +7,12 @@
 #   ./tools/setup-host.sh                  do it (no ffmpeg)
 #   ./tools/setup-host.sh --with-ffmpeg    also install ffmpeg (~115 MB)
 #
+#   ./tools/setup-host.sh --install-service \
+#       [--service-bind 0.0.0.0] [--service-port 8901] \
+#       [--service-mode fmp4] [--service-user <user>]
+#                                          install + enable a systemd unit
+#   ./tools/setup-host.sh --uninstall-service
+#
 # What it does:
 #   1. checks python3 (>=3.8) and libusb
 #   2. makes pyusb importable (distro package preferred, venv as fallback)
@@ -27,19 +33,19 @@ SERVICE_BIND=0.0.0.0
 SERVICE_PORT=8901
 SERVICE_MODE=fmp4
 SERVICE_USER=${SUDO_USER:-$(id -un)}
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run|-n) DRY=1 ;;
-    --yes|-y)     ASSUME_YES=1 ;;
-    --with-ffmpeg) WITH_FFMPEG=1 ;;
-    --install-service) INSTALL_SERVICE=1 ;;
-    --uninstall-service) UNINSTALL_SERVICE=1 ;;
-    --service-bind) SERVICE_BIND="$2"; shift 2 ;;
-    --service-port) SERVICE_PORT="$2"; shift 2 ;;
-    --service-mode) SERVICE_MODE="$2"; shift 2 ;;
-    --service-user) SERVICE_USER="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run|-n)       DRY=1; shift ;;
+    --yes|-y)           ASSUME_YES=1; shift ;;
+    --with-ffmpeg)      WITH_FFMPEG=1; shift ;;
+    --install-service)  INSTALL_SERVICE=1; shift ;;
+    --uninstall-service) UNINSTALL_SERVICE=1; shift ;;
+    --service-bind)     SERVICE_BIND="$2"; shift 2 ;;
+    --service-port)     SERVICE_PORT="$2"; shift 2 ;;
+    --service-mode)     SERVICE_MODE="$2"; shift 2 ;;
+    --service-user)     SERVICE_USER="$2"; shift 2 ;;
+    -h|--help)          sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
