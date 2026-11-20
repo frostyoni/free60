@@ -763,7 +763,8 @@ def cmd_photo(args):
     with open_transport(args) as t:
         cam = Camera(t)
         cam.open_session()
-        cam.prepare()
+        # deliberately NOT prepare(): that calls 7A 01 85 (clear picture
+        # buffer), which would erase the very thing we are about to download.
         data = cam.get_picture()
         open(args.out, "wb").write(data)
         cam.close_session()
@@ -776,7 +777,7 @@ def cmd_thumb(args):
     with open_transport(args) as t:
         cam = Camera(t)
         cam.open_session()
-        cam.prepare()
+        # no prepare() here either - it clears the picture buffer
         data = cam.get_thumbnail() or b""
         open(args.out, "wb").write(data)
         cam.close_session()
