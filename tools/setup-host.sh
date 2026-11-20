@@ -211,8 +211,8 @@ elif [ "$INSTALL_SERVICE" -eq 1 ]; then
     /*) SERVICE_PY="$PYBIN" ;;
     *)  SERVICE_PY=$(command -v "$PYBIN" || echo /usr/bin/python3) ;;
   esac
-  GROUPS=""
-  getent group plugdev >/dev/null 2>&1 && GROUPS="SupplementaryGroups=plugdev"
+  SUPGRP=""
+  getent group plugdev >/dev/null 2>&1 && SUPGRP="SupplementaryGroups=plugdev"
 
   if [ "$DRY" -eq 1 ]; then
     echo "  [dry-run] would write $UNIT:"
@@ -226,7 +226,7 @@ Wants=network-online.target
 Nice=10
 CPUQuota=80%
 User=$SERVICE_USER
-$GROUPS
+$SUPGRP
 WorkingDirectory=$HERE
 ExecStart=$SERVICE_PY tools/madv-web.py --port $SERVICE_PORT --bind $SERVICE_BIND --mode $SERVICE_MODE --idle-timeout 60
 Restart=always
@@ -236,7 +236,8 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   else
-    $SUDO tee "$UNIT" >/dev/null <<EOF
+    TMP=$(mktemp)
+    cat > "$TMP" <<EOF
 [Unit]
 Description=free60 MADV Mini 360 web demo
 After=network-online.target
@@ -246,7 +247,7 @@ Wants=network-online.target
 Nice=10
 CPUQuota=80%
 User=$SERVICE_USER
-$GROUPS
+$SUPGRP
 WorkingDirectory=$HERE
 ExecStart=$SERVICE_PY tools/madv-web.py --port $SERVICE_PORT --bind $SERVICE_BIND --mode $SERVICE_MODE --idle-timeout 60
 Restart=always
@@ -255,9 +256,18 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-    $SUDO systemctl daemon-reload
-    $SUDO systemctl enable --now free60
-    ok "free60.service enabled and started"
+    if [ -f "$UNIT" ] && cmp -s "$TMP" "$UNIT"; then
+      ok "free60.service unchanged - not restarting a running service"
+      rm -f "$TMP"
+    else
+      $SUDO install -m 644 "$TMP" "$UNIT"
+      rm -f "$TMP"
+      $SUDO systemctl daemon-reload
+      $SUDO systemctl enable free60
+      # restart, not 'enable --now': an active unit is left alone by the latter
+      $SUDO systemctl restart free60
+      ok "free60.service written and (re)started"
+    fi
     ok "  http://$SERVICE_BIND:$SERVICE_PORT/   mode=$SERVICE_MODE"
     if ! id -nG "$SERVICE_USER" 2>/dev/null | tr ' ' '\n' | grep '^plugdev$' >/dev/null 2>&1; then
       warn "service user $SERVICE_USER is NOT in plugdev - it may not reach the camera."
