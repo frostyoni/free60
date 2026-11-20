@@ -523,7 +523,12 @@ const $ = id => document.getElementById(id);
 let mode = '360';
 
 $('tab_360').onclick = () => { mode='360'; $('tab_360').classList.add('on'); $('tab_flat').classList.remove('on');
-  $('gl').style.display='block'; $('flat').style.display='none'; };
+  $('gl').style.display='block';
+  $('flat').style.display='none';
+  $('flatwc').style.display='none';
+  // #vid is full-bleed over the canvas in fmp4 mode; leaving it at opacity 1
+  // made the 360 view look unreachable because it was painting on top of it
+  $('vid').style.opacity='0'; };
 $('tab_flat').onclick = () => { mode='flat'; $('tab_flat').classList.add('on'); $('tab_360').classList.remove('on');
   $('gl').style.display='none';
   $('flat').style.display   = (srcMode==='mjpeg')?'block':'none';
