@@ -23,3 +23,7 @@ dump/
 
 # internal notes: never published
 *.local.md
+
+# local hardware experiments - kept out until there is a result worth publishing
+esp32/
+.pio/
