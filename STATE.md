@@ -317,9 +317,12 @@ STATE.md                                     this file
 ```
 
 Toolchain installed for this project, no root needed:
-`/mnt/hdd/tools/jadx-dist/` — jadx + portable Temurin JRE 21.
-Reproduce: `JAVA_HOME=/mnt/hdd/tools/jadx-dist/jdk-21.0.13.1+2-jre \
-/mnt/hdd/tools/jadx-dist/jadx/bin/jadx --deobf -d src assets/Madv+*.zip`
+Installed under `~/tools/jadx-dist/` — jadx plus a portable Temurin JRE, no
+root needed. Reproduce the decompilation with:
+
+```
+JAVA_HOME=~/tools/jadx-dist/jdk-*/ jadx --deobf -d src assets/Madv+*.zip
+```
 
 Useful files to re-read first:
 - `src/sources/p031a/p034b/p035a/C0111b.java` — USB/BBB transport
