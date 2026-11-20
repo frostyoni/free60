@@ -13,6 +13,7 @@
 #   3. installs the udev rule so a normal user can reach the camera
 #   4. notes whether ffmpeg is present. It is NOT installed by default: only
 #      --mode mjpeg needs it. Pass --with-ffmpeg to install it anyway.
+#   5b. optionally install + enable a systemd unit (--install-service).
 #   5. probes for the camera and prints the exact command to run next
 
 set -euo pipefail
@@ -20,11 +21,23 @@ set -euo pipefail
 DRY=0
 ASSUME_YES=0
 WITH_FFMPEG=0
+INSTALL_SERVICE=0
+UNINSTALL_SERVICE=0
+SERVICE_BIND=0.0.0.0
+SERVICE_PORT=8901
+SERVICE_MODE=fmp4
+SERVICE_USER=${SUDO_USER:-$(id -un)}
 for arg in "$@"; do
   case "$arg" in
     --dry-run|-n) DRY=1 ;;
     --yes|-y)     ASSUME_YES=1 ;;
     --with-ffmpeg) WITH_FFMPEG=1 ;;
+    --install-service) INSTALL_SERVICE=1 ;;
+    --uninstall-service) UNINSTALL_SERVICE=1 ;;
+    --service-bind) SERVICE_BIND="$2"; shift 2 ;;
+    --service-port) SERVICE_PORT="$2"; shift 2 ;;
+    --service-mode) SERVICE_MODE="$2"; shift 2 ;;
+    --service-user) SERVICE_USER="$2"; shift 2 ;;
     -h|--help)    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -169,6 +182,83 @@ else
     warn "camera not found - is it plugged into THIS host?"
     warn "the camera is USB-tethered: no Wi-Fi, no Bluetooth, no battery."
   }
+fi
+
+# ---------------------------------------------------------------- service
+UNIT=/etc/systemd/system/free60.service
+if [ "$UNINSTALL_SERVICE" -eq 1 ]; then
+  step "7. remove service"
+  need_root
+  run $SUDO systemctl disable --now free60
+  run $SUDO rm -f "$UNIT"
+  run $SUDO systemctl daemon-reload
+  [ "$DRY" -eq 0 ] && ok "removed free60.service"
+elif [ "$INSTALL_SERVICE" -eq 1 ]; then
+  step "7. install service"
+  need_root
+  case "$SERVICE_MODE" in
+    fmp4|mjpeg|webcodecs) ;;
+    *) fail "--service-mode must be fmp4, mjpeg or webcodecs"; exit 2 ;;
+  esac
+  # systemd needs an absolute interpreter path
+  case "$PYBIN" in
+    /*) SERVICE_PY="$PYBIN" ;;
+    *)  SERVICE_PY=$(command -v "$PYBIN" || echo /usr/bin/python3) ;;
+  esac
+  GROUPS=""
+  getent group plugdev >/dev/null 2>&1 && GROUPS="SupplementaryGroups=plugdev"
+
+  if [ "$DRY" -eq 1 ]; then
+    echo "  [dry-run] would write $UNIT:"
+    sed 's/^/    /' <<EOF
+[Unit]
+Description=free60 MADV Mini 360 web demo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Nice=10
+CPUQuota=80%
+User=$SERVICE_USER
+$GROUPS
+WorkingDirectory=$HERE
+ExecStart=$SERVICE_PY tools/madv-web.py --port $SERVICE_PORT --bind $SERVICE_BIND --mode $SERVICE_MODE --idle-timeout 60
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  else
+    $SUDO tee "$UNIT" >/dev/null <<EOF
+[Unit]
+Description=free60 MADV Mini 360 web demo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Nice=10
+CPUQuota=80%
+User=$SERVICE_USER
+$GROUPS
+WorkingDirectory=$HERE
+ExecStart=$SERVICE_PY tools/madv-web.py --port $SERVICE_PORT --bind $SERVICE_BIND --mode $SERVICE_MODE --idle-timeout 60
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now free60
+    ok "free60.service enabled and started"
+    ok "  http://$SERVICE_BIND:$SERVICE_PORT/   mode=$SERVICE_MODE"
+    if ! id -nG "$SERVICE_USER" 2>/dev/null | tr ' ' '\n' | grep '^plugdev$' >/dev/null 2>&1; then
+      warn "service user $SERVICE_USER is NOT in plugdev - it may not reach the camera."
+      warn "udev uaccess does not apply to services; add the user to the group."
+    fi
+    systemctl is-active free60 >/dev/null 2>&1 && ok "active" || warn "not active - check: journalctl -u free60 -n 30"
+  fi
 fi
 
 # ---------------------------------------------------------------- next
