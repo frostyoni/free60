@@ -10,7 +10,17 @@ no cloud, and no Android.
 
 > `free60` = **free** the **360** camera.
 
-![The web UI: live 360 view, settings in the header, controls along the bottom](assets/free60.jpg)
+![The web UI: a live 360 view, with the stats panel showing 29.8 fps at 5.5 Mbit/s](assets/free60.jpg)
+
+*Streaming: the camera's own H.264, 1920x960 at ~30 fps and 5.5 Mbit/s, nothing
+dropped. The panel shows the real numbers — codec, bitrate from bytes actually
+written, buffered range, dropped frames.*
+
+![The same view with the camera asleep: bitrate 0.00, no subscribers, encoder off](assets/free60_paused.jpg)
+
+*Idle: the encoder is off, the bitrate reads 0.00, there are no subscribers, and
+the sparklines fall to nothing. This is what keeps the camera cool between
+viewers — it is still on the USB bus and wakes on the next request.*
 
 ---
 
