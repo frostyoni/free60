@@ -647,6 +647,46 @@ Fixes:
 
 Verified: SIGTERM exits in ~1 s, cleanly.
 
+### The still path, decoded exactly from the app
+
+Read out of `C0105a` case 18465 and `C0111b`, so these are facts, not guesses:
+
+| question | answer |
+|---|---|
+| is `7A 05 01` a "get file count / open file"? | **No.** `case 18464` gates it on "start live view first" — it is the live-view frame command |
+| is anything sent before `7A 05 02`? | **No.** `f855h` goes straight into the CDB; there is no open/select step |
+| what is in CDB `[8..11]`? | a **byte offset**, 4-byte LE |
+| how does it advance? | `f855h += chunk_len` — the length the reply reported at `[16:20]` |
+| chunk size | **65536** — this is `dCBWDataTransferLength`, and `m1200b()` returns the same constant |
+| stop condition | reply `[1]` (transferType) == 1 |
+| accumulate buffer | 327680, flushed when the next 64K chunk would not fit |
+
+So the drive asks for **64 KiB at a time**, by byte offset, until the camera
+says the transfer is finished. My driver was asking for **327680** in a single
+CBW - a 5x mismatch with what the firmware is built for. That is now corrected
+to 65536, though it turned out not to be the blocker: the reply is identical
+(`status=1, transferType=1, chunk=0`), which means the firmware has nothing at
+that offset rather than that it dislikes the request.
+
+### The buffer model that explains everything
+
+Capture writes the still into **DRAM**, and the download reads those bytes back
+by offset. That single model accounts for every observation:
+
+- `stored_pic_num = 9` appeared right after a capture and means nothing later
+- `7A 01 85` (clear picture buffer) wipes it - and `prepare()` sends that on
+  every connect and every wake, so the buffer is empty most of the time
+- a USB reset loses it, because the DRAM the buffer lives in is repowered
+- `status=1, chunk=0` is the firmware saying "there is nothing here", not "no"
+
+There is no evidence anywhere in the app for a second LUN, a ramdisk exposed by
+re-enumeration, or a submode switch. It never re-enumerates and never selects a
+different LUN; `7A 01 81/83/84` are the firmware-update path only.
+
+**Which means the still pipeline is: capture -> DRAM -> download in 64 KiB
+chunks -> ack.** Nothing sits in non-volatile storage, so there is nothing to
+recover after a reset, and no way to download a photo that was taken before it.
+
 ### How the official app retrieved a photo — and what we do differently
 
 Reading the app's own flow, the still path is **not** a variant of live view and

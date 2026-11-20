@@ -652,7 +652,11 @@ class Camera:
             self.keepalive()
             p, _ = self._call(
                 _cdb(OP_CMD, CAT_STREAM, 0x02, _u32le_params(8, offset)),
-                rx_len=327680, timeout_ms=6000)
+                # 65536, not 327680: this is dCBWDataTransferLength, and the
+                # app passes exactly f897d (65536). The firmware validates it -
+                # asking for more than it will deliver is a good way to get a
+                # zero-length CSW and a permanent "busy".
+                rx_len=65536, timeout_ms=6000)
             if len(p) < 20 or p[0] != ST_OK:
                 stalls += 1
                 time.sleep(0.05)
