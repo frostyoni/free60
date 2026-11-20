@@ -10,6 +10,8 @@ no cloud, and no Android.
 
 > `free60` = **free** the **360** camera.
 
+![The web UI: live 360 view, settings in the header, controls along the bottom](assets/free60.jpg)
+
 ---
 
 ## What the device actually is
