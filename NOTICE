@@ -1,0 +1,20 @@
+# NOTICE
+
+The MIT license in `LICENSE` covers the original work in this repository: the
+driver, the web demo and the documentation.
+
+It does **not** cover material recovered from the vendor's Android
+application, which remains the copyright of its owner and is included here only
+for interoperability and preservation:
+
+| file | what it is |
+|---|---|
+| `firmware/fw11126.zip` | the camera's own firmware image |
+| `reference/shaders/*.glsl` | GLSL extracted from the APK |
+| `reference/usb_device_filter.xml` | the APK's USB attach filter |
+
+Those are the vendor's, not mine, and this project claims no rights over them.
+They are here because the application that shipped them is gone and this may be
+the last copy in existence.
+
+Do not redistribute them as if they were free software.

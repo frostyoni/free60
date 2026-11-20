@@ -19,18 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-This license covers the original work in this repository: the driver, the web
-demo and the documentation.
-
-It does NOT cover material recovered from the vendor's Android application,
-which remains the copyright of its owner and is included here only for
-interoperability and preservation:
-
-  firmware/fw11126.zip      the camera's own firmware image
-  reference/shaders/        GLSL extracted from the APK
-  reference/usb_device_filter.xml
-
-Do not redistribute those as if they were free software.

@@ -292,13 +292,10 @@ last resort and has never been executed.
 [MIT](LICENSE) for the driver, the web demo and these docs — use it, ship it,
 fork it.
 
-That license does **not** extend to material recovered from the vendor's app,
-which stays its owner's copyright and is included only for interoperability
-and preservation:
-
-- `firmware/fw11126.zip` — the camera's own firmware
-- `reference/shaders/` — GLSL extracted from the APK
-- `reference/usb_device_filter.xml`
+That license does **not** extend to material recovered from the vendor's app:
+the firmware image, the extracted GLSL and the USB filter stay their owner's
+copyright and are included only for interoperability and preservation. See
+[NOTICE](NOTICE) for the specifics.
 
 The point of this project is that the hardware outlives the app. Take the code,
 take the protocol, and go keep a forgotten camera alive.
