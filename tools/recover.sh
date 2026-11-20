@@ -54,7 +54,8 @@ fi
 step "2. does it answer?"
 ANSWER=0
 if [ -n "$PY" ]; then
-  PYTHONPATH="${FREEB0_TOOLS:-$(dirname "$0")}" "$PY" - <<'EOF'
+  RC=0
+  PYTHONPATH="${FREEB0_TOOLS:-$(dirname "$0")}" "$PY" - <<'EOF' || RC=$?
 import sys
 try:
     import madv
@@ -71,7 +72,6 @@ except Exception as e:
 print("  answers, fw=%s" % info.get("fw_version"))
 sys.exit(0 if info.get("fw_version") else 1)
 EOF
-  RC=$?
   case $RC in
     0) ANSWER=1; say "responsive" ;;
     2) say "busy - probably already held by a running service (that is fine)" ;;
