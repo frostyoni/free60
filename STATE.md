@@ -647,6 +647,43 @@ Fixes:
 
 Verified: SIGTERM exits in ~1 s, cleanly.
 
+### How the official app retrieved a photo — and what we do differently
+
+Reading the app's own flow, the still path is **not** a variant of live view and
+is not streamed through the same buffer. `7A 05 01` returns H.264 access units;
+`7A 05 02` returns a **paged JPEG blob** by byte offset. Two different things.
+
+What the app does that is worth copying:
+
+1. The CDB is identical to ours - `7A 05 02`, offset in `[8..11]`, 327680-byte
+   accumulation buffer, loop until the "end" transfer type. No hidden command.
+2. **It only talks to the camera in a known core state.** The "app is in
+   gallery" notify (`7A 00 02` with `[9]=1` and UI mode 272) is sent **only
+   when core status == 3**, i.e. the communication session is closed. The
+   gallery flow lives in a *closed-session* state, not alongside streaming.
+3. Our driver has only ever asked for a picture from an **open session with
+   live view running** - a state the app never uses for this.
+
+The leading hypothesis for `7A 05 02` answering `busy` forever is therefore
+that **the camera will only serve stored pictures once the live-view session is
+closed and it has been told the app is in gallery mode.**
+
+A second, cheaper suspect: `7A 01 85` (clear picture buffer) is called by
+`prepare()` on every connect. If the photo lives in that buffer, clearing it
+before download would erase the thing we are trying to fetch. `madv.py photo`
+currently calls `prepare()` first, which would do exactly that.
+
+The experiment, in order:
+
+1. capture with a session open, then **`stop_live_view`**, then download
+   (nothing else)
+2. if that fails, **close the session**, send the gallery notify, reopen, and
+   download - i.e. copy the app's state
+3. never call `7A 01 85` between capture and download
+
+None of this has been run: on the test unit capture resets the USB link, so the
+capture step has to be trustworthy first (see the power experiment below).
+
 ### Still capture resets the USB connection (open, 2026-11-19)
 
 New evidence from the TV-box deployment, which is the more informative one:
