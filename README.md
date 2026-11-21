@@ -197,9 +197,22 @@ Two modes:
 |---|---|---|
 | `mjpeg` (default) | server transcodes to MJPEG | works in any browser; the encode is the entire CPU cost |
 | **`fmp4`** | server **remuxes** the camera's H.264 into fragmented MP4, browser plays it via MediaSource | near-zero CPU, works over plain http — **use this on an SBC** |
-| `webcodecs` | server relays raw H.264, browser decodes | zero CPU, but **secure context only** — black screen over `http://<lan-ip>` |
+| `webcodecs` | server relays raw H.264, browser decodes | zero CPU, but **secure context only** — needs `--https` |
 
-The camera already emits H.264, so `webcodecs` is the right choice on an SBC.
+The camera already emits H.264, so `webcodecs` is the cheapest path on an SBC —
+but `VideoDecoder` only exists in a **secure context**, so over
+`http://<lan-ip>` it renders black. Let the server terminate TLS itself:
+
+```bash
+./.venv/bin/python tools/madv-web.py --port 8901 --bind <lan-ip>     --mode webcodecs --https
+```
+
+That generates a self-signed certificate on first run (SANs for every local
+address, key at `0600`, kept in `certs/` which is gitignored). The browser warns
+once; accept it and `VideoDecoder` exists. No CA, no tailnet, no reverse proxy —
+which matters, because a tailnet certificate would only help tailnet devices.
+
+Pass `--cert`/`--key` instead if you have a proper certificate.
 
 Drag to look around, scroll/pinch to zoom, double-click to reset. There is also
 a "flat panorama" tab showing the raw 2:1 equirectangular frame.

@@ -82,9 +82,17 @@ Open `http://<lan-ip>:8901/`.
 and only a console warning explains why. `localhost` counts as secure; a LAN
 address does not, and neither do phones or tablets on that address.
 
-Unless you front the server with HTTPS, **use `--mode fmp4`**. It hands the
-camera's own H.264 to MediaSource, costs the same near-zero CPU as WebCodecs,
-and has no secure-context requirement.
+Two ways out:
+
+1. **`--https`** — the server generates a self-signed certificate on first run
+   (SANs for every local address, key chmod 600, in `certs/`). The browser warns
+   once, then WebCodecs works. This is the portable answer: it helps any device
+   on the LAN, unlike a tailnet certificate which only helps tailnet members.
+2. **`--mode fmp4`** — hands the camera's own H.264 to MediaSource instead.
+   Near-identical CPU cost, no certificate, no warning.
+
+`fmp4` is the better default. `webcodecs --https` is worth it only if you want
+ffmpeg out of the pipeline entirely.
 
 MJPEG is the fallback that always works, at roughly 3x the bandwidth and real
 CPU cost — on an H616 that measured around 2.7 cores at 24 fps.
