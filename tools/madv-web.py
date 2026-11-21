@@ -44,7 +44,9 @@ class Capture:
         self.mode = mode              # 'mjpeg' | 'webcodecs' | 'fmp4'
         self.mp4_init = b""
         self._mp4_ready = False
-        self.subs = []                # queues for raw H.264 relays
+        self.subs = []                # access-unit subscribers (webcodecs)
+        self.subs_frag = []           # fragment subscribers (mp4/MSE)
+        self.want_mp4 = 0.0           # last time someone asked for mp4
         self.subs_lock = threading.Lock()
         self.scale_width = scale_width
         self.idle_timeout = idle_timeout
@@ -75,16 +77,19 @@ class Capture:
         self.thread.start()
         return self
 
-    def subscribe(self):
+    def subscribe(self, kind="au"):
         q = deque(maxlen=120)
         with self.subs_lock:
-            self.subs.append(q)
+            (self.subs if kind == "au" else self.subs_frag).append(q)
+        if kind == "frag":
+            self.want_mp4 = time.time()
         return q
 
-    def unsubscribe(self, q):
+    def unsubscribe(self, q, kind="au"):
         with self.subs_lock:
-            if q in self.subs:
-                self.subs.remove(q)
+            lst = self.subs if kind == "au" else self.subs_frag
+            if q in lst:
+                lst.remove(q)
 
     def publish(self, au):
         with self.subs_lock:
@@ -220,7 +225,7 @@ class Capture:
 
     def _publish_fragment(self, frag):
         with self.subs_lock:
-            subs = list(self.subs)
+            subs = list(self.subs_frag)
         for q in subs:
             q.append(frag)
         # count frames, not fragments: a 200 ms fragment holds ~6 samples, and
@@ -235,6 +240,26 @@ class Capture:
         if now - self._fps_t0 >= 2.0:
             self.fps = self._fps_n / (now - self._fps_t0)
             self._fps_t0, self._fps_n = now, 0
+
+    def _start_mp4(self):
+        if self.ff is not None:
+            return
+        self.mp4_init = b""
+        self._mp4_ready = False
+        self.ff = self._spawn_ffmpeg()
+        threading.Thread(target=self._read_mp4, args=(self.ff,),
+                         daemon=True).start()
+        print("[capture] mp4 requested - ffmpeg started (remux only)", flush=True)
+
+    def _stop_mp4(self):
+        if self.ff is None:
+            return
+        try:
+            self.ff.kill()
+        except Exception:
+            pass
+        self.ff = None
+        print("[capture] no mp4 viewers - ffmpeg stopped", flush=True)
 
     def _run(self):
         while self.running:
@@ -324,6 +349,14 @@ class Capture:
                     # per call - that poll loop, not the data, was the CPU.
                     # Wait roughly half an observed frame interval instead.
                     time.sleep(max(0.004, min(0.020, self._frame_dt * 0.5)))
+                if self.mode == "auto":
+                    now_a = time.time()
+                    if self.ff is None and (now_a - self.want_mp4) < 10:
+                        self._start_mp4()
+                    elif (self.ff is not None and not self.subs_frag
+                          and (now_a - self.want_mp4) > 20):
+                        self._stop_mp4()
+
                 if fr and fr["data"]:
                     now_f = time.time()
                     if self._last_frame_t:
@@ -331,13 +364,17 @@ class Capture:
                         if 0 < dt < 1.0:
                             self._frame_dt = self._frame_dt * 0.8 + dt * 0.2
                     self._last_frame_t = now_f
-                    if ff is not None:
+                    target = ff if ff is not None else self.ff
+                    if target is not None:
                         try:
-                            ff.stdin.write(fr["data"])
-                            ff.stdin.flush()
+                            target.stdin.write(fr["data"])
+                            target.stdin.flush()
                         except (BrokenPipeError, OSError):
-                            break
-                    else:
+                            if target is self.ff:
+                                self.ff = None
+                            else:
+                                break
+                    if target is None or self.mode == "auto":
                         self.publish(fr["data"])
                     # The next frame is roughly _frame_dt away. Waiting most of
                     # that here means the following poll lands on a frame
@@ -971,6 +1008,13 @@ async function initStream(){
   try{ j = await (await fetch('/api/info')).json(); }catch(e){}
   srcMode = j.mode || 'mjpeg';
   CODEC = j.codec || CODEC;
+  if(srcMode==='auto'){
+    // webcodecs is cheapest but needs a secure context; MSE works anywhere.
+    // The server runs both, and only starts ffmpeg when something asks for mp4.
+    const wc = window.isSecureContext && ('VideoDecoder' in window);
+    srcMode = wc ? 'webcodecs' : 'fmp4';
+    $('s_pick') && ($('s_pick').textContent = wc ? 'webcodecs' : 'fmp4 (no secure ctx)');
+  }
   if(srcMode==='mjpeg'){
     // only the mjpeg path needs the multipart stream.  Opening it in another
     // mode used to leave a server thread blocked on frames that never come.
@@ -1088,6 +1132,27 @@ initStream().catch(e=>console.warn('stream init failed', e));
 </script></body></html>"""
 
 
+class Server(ThreadingHTTPServer):
+    """HTTPS-capable server that does not handshake in the accept loop.
+
+    Wrapping the listening socket with do_handshake_on_connect=True (the
+    default) makes accept() block until each client finishes its handshake.
+    Browsers routinely open sockets they never complete - preconnect, a TLS
+    probe, a cancelled tab - and each one stalls every other client, which
+    presents as "took too long to respond". Deferring the handshake to the
+    per-connection thread costs nothing and removes the whole class of stall.
+    """
+    daemon_threads = True
+    ssl_ctx = None
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        if self.ssl_ctx is None:
+            return sock, addr
+        return self.ssl_ctx.wrap_socket(
+            sock, server_side=True, do_handshake_on_connect=False), addr
+
+
 class Handler(BaseHTTPRequestHandler):
     capture = None
     protocol_version = "HTTP/1.1"
@@ -1188,7 +1253,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
         if path == "/stream.mp4":
             cap.last_request = time.time()
-            q = cap.subscribe()
+            q = cap.subscribe("frag")
             self.send_response(200)
             self.send_header("Content-Type", "application/octet-stream")
             self.send_header("Transfer-Encoding", "chunked")
@@ -1233,16 +1298,17 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
-                cap.unsubscribe(q)
+                cap.unsubscribe(q, "frag")
             return
 
         if path == "/live.mp4":
+            cap.want_mp4 = time.time()
             # Standard-consumable fragmented MP4: init segment then fragments,
             # verbatim, no framing. /stream.mp4 is length-prefixed because the
             # page needs to split records; anything else - ffmpeg, VLC, OBS, a
             # <video src=...> - wants the plain stream.
             cap.last_request = time.time()
-            q = cap.subscribe()
+            q = cap.subscribe("frag")
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Transfer-Encoding", "chunked")
@@ -1276,7 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
-                cap.unsubscribe(q)
+                cap.unsubscribe(q, "frag")
             return
 
         if path == "/stream.h264":
@@ -1407,11 +1473,14 @@ def main():
     ap.add_argument("--scale", type=int, default=1920,
                     help="downscale width for the web preview (0 = native)")
     ap.add_argument("--quality", type=int, default=5)
-    ap.add_argument("--mode", choices=["mjpeg", "fmp4", "webcodecs"], default="mjpeg",
+    ap.add_argument("--mode", choices=["auto", "mjpeg", "fmp4", "webcodecs"], default="mjpeg",
                     help="mjpeg: server transcodes, any browser. "
                          "fmp4: remux only (copy), near-zero CPU, browser uses "
                          "MediaSource - works over plain http. "
-                         "webcodecs: relay raw H.264, secure context only")
+                         "webcodecs: relay raw H.264, secure context only. "
+                         "auto: relay raw H.264 by default and start ffmpeg "
+                         "remuxing only while an mp4 viewer is connected - the "
+                         "page picks whichever its browser can do")
     ap.add_argument("--idle-timeout", type=int, default=60,
                     help="seconds with no viewer before the camera is put to "
                          "sleep; 0 disables (the camera runs HOT while streaming)")
@@ -1427,7 +1496,7 @@ def main():
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _on_signal)
 
-    srv = ThreadingHTTPServer((args.bind, args.port), Handler)
+    srv = Server((args.bind, args.port), Handler)
 
     if args.https or args.cert:
         if args.cert and args.key:
@@ -1436,7 +1505,7 @@ def main():
             cert, key = ensure_cert(args.bind, args.cert_dir)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(cert, key)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        srv.ssl_ctx = ctx
         scheme = "https"
         print(f"[tls] serving {cert} (accept the browser warning once)",
               flush=True)
