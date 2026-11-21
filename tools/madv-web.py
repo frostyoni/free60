@@ -1166,8 +1166,25 @@ class Server(ThreadingHTTPServer):
         sock, addr = self.socket.accept()
         if self.ssl_ctx is None:
             return sock, addr
-        return self.ssl_ctx.wrap_socket(
-            sock, server_side=True, do_handshake_on_connect=False), addr
+        # One port, both schemes: peek at the first byte. A TLS ClientHello
+        # starts with 0x16 (handshake); every HTTP method starts with an ASCII
+        # letter. This lets http:// and https:// work on the same port, which
+        # matters for comparing the MSE path (plain http) against the WebCodecs
+        # path (secure context) against the same camera at the same moment.
+        try:
+            sock.settimeout(3.0)
+            first = sock.recv(1, _socket.MSG_PEEK)
+        except OSError:
+            first = b""
+        finally:
+            try:
+                sock.settimeout(None)
+            except OSError:
+                pass
+        if first == b"\x16":
+            return self.ssl_ctx.wrap_socket(
+                sock, server_side=True, do_handshake_on_connect=False), addr
+        return sock, addr
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1480,9 +1497,10 @@ def main():
     ap.add_argument("--port", type=int, default=8901)
     ap.add_argument("--bind", default="0.0.0.0")
     ap.add_argument("--https", action="store_true",
-                    help="serve HTTPS with a self-signed certificate. Required "
-                         "for --mode webcodecs: VideoDecoder only exists in a "
-                         "secure context")
+                    help="a self-signed certificate for the SAME port: requests "
+                         "that start with a TLS handshake are wrapped, plain "
+                         "http requests are served as-is. Required for "
+                         "--mode webcodecs, which needs a secure context")
     ap.add_argument("--cert", help="certificate to use with --https")
     ap.add_argument("--key", help="private key to use with --https")
     ap.add_argument("--cert-dir", default="certs",
