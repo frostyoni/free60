@@ -197,7 +197,7 @@ That is the setup I would use. Press `s` in the page for the full stats panel.
 
 | Mode | What the server does | Good for |
 |---|---|---|
-| **`auto`** | relays raw H.264; starts ffmpeg only if a viewer asks for mp4 | **the default choice.** Page picks per browser |
+| **`auto`** | relays raw H.264; starts ffmpeg only if a viewer asks for mp4 | **what I would use** - the page picks per browser. Not the CLI default (that is still `mjpeg`) |
 | `mjpeg` | transcodes to JPEG | any browser, no WebCodecs, no certificate |
 | `fmp4` | remuxes to fragmented MP4 (`-c:v copy`) | MSE without the auto machinery |
 | `webcodecs` | relays raw H.264, nothing else | forcing the lowest-latency path |
