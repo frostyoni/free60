@@ -65,11 +65,15 @@ Working, verified against real hardware:
 - ✅ browser demo with a drag-to-look 360° viewer
 - ✅ **idle handling** — with no viewer the encoder is stopped (cool) and the
   next request brings the stream straight back; the device stays on the bus
-- ✅ **low-CPU mode (`--mode fmp4`)**: the camera's own H.264 is remuxed, not
-  re-encoded, and played via MediaSource. Works over plain http.
-- ⚠️ `--mode webcodecs` also exists and costs even less, but `VideoDecoder`
-  requires a **secure context** — it is black over `http://<lan-ip>`. The page
-  now says so out loud instead of failing silently.
+- ✅ **low-CPU streaming.** The camera's own H.264 is handed to the browser
+  untouched — WebCodecs when the page is a secure context, MediaSource
+  otherwise. No re-encode in either path, and ffmpeg only runs while an MSE
+  viewer is actually connected.
+- ✅ **http and https on the same port**, so the decoder is a URL choice:
+  `https://` gets WebCodecs (lower latency), `http://` gets MediaSource (more
+  tolerant of jitter).
+- ✅ **a virtual webcam** — the panorama projected to a flat view and published
+  through v4l2loopback, so Zoom and friends see a normal camera.
 
 Open:
 
@@ -103,7 +107,7 @@ physically plugged into the machine running this.
 | Python 3.8+ | the driver | distro `python3-usb` is enough; no venv required |
 | `libusb-1.0` | USB access | vendor-class device, no kernel driver binds it |
 | udev rule | unprivileged access | `tools/60-madv-mini.rules` |
-| `ffmpeg` | **only** for the MJPEG web demo | not installed by default; `--with-ffmpeg` to add it. Other modes need none |
+| `ffmpeg` | the MJPEG and mp4/MSE paths | **not needed for WebCodecs** (auto + https). Not installed by default; `--with-ffmpeg` to add it |
 
 No compiler, no kernel module, no GPU, no bootloader work. x86_64, arm64 and
 armv7 all work — the driver is pure Python over libusb.
@@ -186,53 +190,51 @@ ffplay live.h264
 ### Web demo
 
 ```bash
-./.venv/bin/python tools/madv-web.py --port 8901 --bind <your-lan-ip>
-# or, on a weak box, with no transcoding at all:
-./.venv/bin/python tools/madv-web.py --port 8901 --bind <your-lan-ip> --mode webcodecs
+./.venv/bin/python tools/madv-web.py --port 8901 --bind <lan-ip> --mode auto --https
 ```
 
-Two modes:
+That is the setup I would use. Press `s` in the page for the full stats panel.
 
-| Mode | What runs | Cost |
+| Mode | What the server does | Good for |
 |---|---|---|
-| `mjpeg` (default) | server transcodes to MJPEG | works in any browser; the encode is the entire CPU cost |
-| **`fmp4`** | server **remuxes** the camera's H.264 into fragmented MP4, browser plays it via MediaSource | near-zero CPU, works over plain http — **use this on an SBC** |
-| `webcodecs` | server relays raw H.264, browser decodes | zero CPU, but **secure context only** — needs `--https` |
+| **`auto`** | relays raw H.264; starts ffmpeg only if a viewer asks for mp4 | **the default choice.** Page picks per browser |
+| `mjpeg` | transcodes to JPEG | any browser, no WebCodecs, no certificate |
+| `fmp4` | remuxes to fragmented MP4 (`-c:v copy`) | MSE without the auto machinery |
+| `webcodecs` | relays raw H.264, nothing else | forcing the lowest-latency path |
 
-The camera already emits H.264, so `webcodecs` is the cheapest path on an SBC —
-but `VideoDecoder` only exists in a **secure context**, so over
-`http://<lan-ip>` it renders black. Let the server terminate TLS itself:
+**One port, both schemes.** With `--https` the server peeks the first byte on
+each connection: a TLS ClientHello gets wrapped, a plain HTTP request is served
+as-is. So the *URL* selects the decoder:
 
-```bash
-./.venv/bin/python tools/madv-web.py --port 8901 --bind <lan-ip>     --mode webcodecs --https
-```
+| URL | Transport | Decoder | Latency |
+|---|---|---|---|
+| `https://<host>:8901` | TLS | **WebCodecs** | lowest — each access unit goes straight to the decoder |
+| `http://<host>:8901` | plain | **MediaSource** | higher — MSE buffers ahead by design, but rides out jitter |
 
-That generates a self-signed certificate on first run (SANs for every local
-address, key at `0600`, kept in `certs/` which is gitignored). The browser warns
-once; accept it and `VideoDecoder` exists. No CA, no tailnet, no reverse proxy —
-which matters, because a tailnet certificate would only help tailnet devices.
+For `--https` the server generates a self-signed certificate on first run (SANs
+for every local address, key at `0600`, in `certs/`, gitignored). The browser
+warns once; accept it and `VideoDecoder` exists. No CA, no tailnet, no reverse
+proxy — which matters, because a tailnet certificate would only help tailnet
+devices. Pass `--cert`/`--key` to use a real one instead.
 
-Pass `--cert`/`--key` instead if you have a proper certificate.
-
-Drag to look around, scroll/pinch to zoom, double-click to reset. There is also
-a "flat panorama" tab showing the raw 2:1 equirectangular frame.
+Drag to look around, scroll/pinch to zoom, double-click to reset. The "flat
+panorama" tab shows the raw 2:1 equirectangular frame.
 
 It stops streaming when nobody is watching (`--idle-timeout`, default 60 s) and
-wakes on the next request — see the heat note below.
+wakes on the next request — see the heat note below. The **Sleep camera**
+button does it immediately, and its first job is to drop the page's own stream,
+because any viewer traffic counts as a reason to wake.
 
-Press **Stats** (or `s`) for a transparent panel with the numbers: mode, codec,
-server fps, frame count, a real byte-rate measured from what the server wrote,
-resolution, readyState, buffered range, dropped frames, reconnect count — plus
-sparklines for fps and bitrate. It reads exposed state rather than inventing
-it, so it doubles as the debugging surface when something looks wrong and you
-have no console. There is also a **Sleep
-camera** button that does it immediately: its first job is to drop the page's
-own stream, because the server counts any viewer traffic as a reason to wake.
+**Stats panel** (`s`): which path and decoder are in use, server fps, frame
+count, a real byte-rate measured from bytes the server wrote, resolution,
+readyState, buffered range, dropped frames and drop rate, decoder queue depth,
+end-to-end latency, whether ffmpeg is available — plus sparklines for fps,
+bitrate and latency. It reads exposed state rather than inventing numbers, and
+a **copy** button puts the whole thing on the clipboard for bug reports.
 
-**Firewall note:** if the host runs a firewall, the port has to be allowed in
-before anything can reach it. On nftables, reload **with a delete first** —
-`nft -f` on an existing table *appends* and silently duplicates every rule, so
-packets end up both logged and allowed:
+**Firewall note:** if the host runs a firewall, open the port before anything
+can reach it. On nftables reload **with a delete first** — `nft -f` on an
+existing table *appends* and silently duplicates every rule:
 
 ```bash
 sudo nft delete table inet <table> && sudo nft -f <your-rules-file>.nft
@@ -266,9 +268,12 @@ panorama. `--raw` leaves it unprojected.
 | File | Purpose |
 |---|---|
 | `tools/madv.py` | host driver + CLI (probe/info/live/photo/thumb/shoot/record/sleep/poweroff/raw/dump) |
-| `tools/madv-web.py` | HTTP server + 360° browser demo |
-| `tools/axml.py` | standalone Android binary-XML parser (used to read the APK manifest) |
+| `tools/madv-web.py` | HTTP/HTTPS server + 360° browser demo |
+| `tools/setup-host.sh` | installs libusb, pyusb, the udev rule, optionally the systemd unit |
+| `tools/recover.sh` | software replug: reset, unbind/bind, restart the service |
+| `tools/still-probe.py` | one uninterrupted capture → download pass (see the open items) |
 | `tools/virtual-cam.sh` | publish the stream as a V4L2 webcam (viewer-side) |
+| `tools/axml.py` | standalone Android binary-XML parser (used to read the APK manifest) |
 | `tools/60-madv-mini.rules` | udev rule for `464a:4d02` |
 
 `madv.py` deliberately has **no dependencies beyond pyusb** — it builds the
@@ -310,6 +315,13 @@ last resort and has never been executed.
   no battery, so a physical unplug/replug is the only reset.
 - `0xFF` in a reply means "asleep" — re-send open communication. The driver
   does this automatically.
+- **A live-view frame is not always one reply.** Above 65504 bytes the camera
+  splits it across several, marking the last with flag `[1] == 1`. Treating each
+  reply as a whole access unit hands a decoder half a frame — and because H.264
+  codes macroblocks in raster order, what goes missing is the **bottom** of the
+  picture. That cost a day: it looked like a projection bug at the nadir, and
+  only appeared on the WebCodecs path, because the mp4 path simply concatenates
+  the byte stream.
 - A reply beginning `0x31 0x01 0x02 0x00` in a downloaded JPEG is a vendor tag
   the official app zeroes out before saving.
 - Place the camera **upright** if you want the panorama horizon level; on its
