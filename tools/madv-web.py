@@ -21,6 +21,9 @@ import argparse
 import json
 import signal
 import os
+import shutil
+import socket as _socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -1333,10 +1336,74 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, "text/plain", b"not found")
 
 
+def ensure_cert(bind_addr, certdir):
+    """Return (cert, key), generating a self-signed pair with SANs if needed.
+
+    WebCodecs (`VideoDecoder`) is only exposed in a secure context, so
+    `--mode webcodecs` cannot work over plain http on a LAN address. A
+    self-signed certificate is enough: the browser warns once, the user
+    accepts, and the page is then a secure context. No CA, no tailnet, and it
+    works for any device on the LAN - which is the point of shipping it.
+    """
+    os.makedirs(certdir, exist_ok=True)
+    cert = os.path.join(certdir, "cert.pem")
+    key = os.path.join(certdir, "key.pem")
+    if os.path.exists(cert) and os.path.exists(key):
+        return cert, key
+
+    if not shutil.which("openssl"):
+        raise SystemExit(
+            "openssl not found - needed once to generate a self-signed "
+            "certificate. Install openssl, or pass --cert/--key.")
+
+    sans = ["DNS:localhost", "IP:127.0.0.1"]
+    host = _socket.gethostname()
+    if host and host != "localhost":
+        sans.append("DNS:" + host)
+    if bind_addr not in ("0.0.0.0", "::", ""):
+        sans.append("IP:" + bind_addr)
+    # every local IPv4, so whichever address the user actually types matches
+    try:
+        out = subprocess.run(["hostname", "-I"], capture_output=True,
+                             text=True, timeout=3).stdout
+        for ip in out.split():
+            if ip.count(".") == 3:
+                sans.append("IP:" + ip)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        for info in _socket.getaddrinfo(host, None, _socket.AF_INET):
+            sans.append("IP:" + info[4][0])
+    except OSError:
+        pass
+    san = ",".join(dict.fromkeys(sans))
+
+    print(f"[tls] generating a self-signed certificate for {san}", flush=True)
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+         "-keyout", key, "-out", cert, "-days", "825",
+         "-subj", "/CN=free60 camera",
+         "-addext", "subjectAltName=" + san],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        os.chmod(key, 0o600)
+    except OSError:
+        pass
+    return cert, key
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8901)
     ap.add_argument("--bind", default="0.0.0.0")
+    ap.add_argument("--https", action="store_true",
+                    help="serve HTTPS with a self-signed certificate. Required "
+                         "for --mode webcodecs: VideoDecoder only exists in a "
+                         "secure context")
+    ap.add_argument("--cert", help="certificate to use with --https")
+    ap.add_argument("--key", help="private key to use with --https")
+    ap.add_argument("--cert-dir", default="certs",
+                    help="where a generated certificate is kept (default: certs/)")
     ap.add_argument("--scale", type=int, default=1920,
                     help="downscale width for the web preview (0 = native)")
     ap.add_argument("--quality", type=int, default=5)
@@ -1361,8 +1428,26 @@ def main():
     signal.signal(signal.SIGTERM, _on_signal)
 
     srv = ThreadingHTTPServer((args.bind, args.port), Handler)
+
+    if args.https or args.cert:
+        if args.cert and args.key:
+            cert, key = args.cert, args.key
+        else:
+            cert, key = ensure_cert(args.bind, args.cert_dir)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        scheme = "https"
+        print(f"[tls] serving {cert} (accept the browser warning once)",
+              flush=True)
+    else:
+        scheme = "http"
     srv.daemon_threads = True
-    print(f"serving on http://{args.bind}:{args.port}/  mode={args.mode}", flush=True)
+    print(f"serving on {scheme}://{args.bind}:{args.port}/  mode={args.mode}", flush=True)
+    if args.mode == "webcodecs" and scheme != "https":
+        print("[warn] webcodecs needs a secure context: browsers will show a", flush=True)
+        print("       black canvas on http://<lan-ip>. Add --https, or use", flush=True)
+        print("       --mode fmp4 which has no such requirement.", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

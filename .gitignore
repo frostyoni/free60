@@ -27,3 +27,6 @@ dump/
 # local hardware experiments - kept out until there is a result worth publishing
 esp32/
 .pio/
+
+# generated TLS material
+certs/
