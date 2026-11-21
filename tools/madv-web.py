@@ -41,7 +41,8 @@ import madv
 class Capture:
     def __init__(self, scale_width=1920, quality=5, idle_timeout=60,
                  mode="mjpeg"):
-        self.mode = mode              # 'mjpeg' | 'webcodecs' | 'fmp4'
+        self.mode = mode              # 'auto' | 'mjpeg' | 'webcodecs' | 'fmp4'
+        self.ffmpeg_ok = shutil.which("ffmpeg") is not None
         self.mp4_init = b""
         self._mp4_ready = False
         self.subs = []                # access-unit subscribers (webcodecs)
@@ -244,6 +245,10 @@ class Capture:
 
     def _start_mp4(self):
         if self.ff is not None:
+            return
+        if not self.ffmpeg_ok:
+            self.error = "ffmpeg is not installed - the mp4/MSE path is unavailable"
+            print("[capture] " + self.error, flush=True)
             return
         self.mp4_init = b""
         self._mp4_ready = False
@@ -546,6 +551,8 @@ PAGE = r"""<!doctype html>
   <div id="veil"><div>camera asleep &mdash; encoder off<br><span style="opacity:.7">click anywhere to wake</span></div></div>
   <div id="stats">
     <div class="row"><span class="lbl">stream</span><b id="s_mode">-</b></div>
+    <div class="row"><span>path</span><b id="s_path">-</b></div>
+    <div class="row"><span>decoder</span><b id="s_dec">-</b></div>
     <div class="row"><span>codec</span><b id="s_codec">-</b></div>
     <div class="row"><span>server fps</span><b id="s_sfps">-</b></div>
     <div class="row"><span>frames</span><b id="s_frames">-</b></div>
@@ -554,6 +561,10 @@ PAGE = r"""<!doctype html>
     <div class="row"><span>readyState</span><b id="s_rs">-</b></div>
     <div class="row"><span>buffered</span><b id="s_buf">-</b></div>
     <div class="row"><span>dropped</span><b id="s_drop">-</b></div>
+    <div class="row"><span>drop/s</span><b id="s_drops">-</b></div>
+    <div class="row"><span>decode queue</span><b id="s_dq">-</b></div>
+    <div class="row"><span>latency</span><b id="s_lat">-</b></div>
+    <div class="row"><span>ffmpeg</span><b id="s_ff">-</b></div>
     <div class="row"><span>sessions</span><b id="s_gen">-</b></div>
     <div class="row"><span class="lbl">server</span><b>-</b></div>
     <div class="row"><span>subscribers</span><b id="s_subs">-</b></div>
@@ -561,6 +572,8 @@ PAGE = r"""<!doctype html>
     <div class="row"><span>canvas</span><b id="s_cv">-</b></div>
     <div class="g"><div class="lbl">fps</div><canvas id="g_fps" width="240" height="26"></canvas></div>
     <div class="g"><div class="lbl">mbit/s</div><canvas id="g_mb" width="240" height="26"></canvas></div>
+    <div class="g"><div class="lbl">latency ms</div><canvas id="g_lat" width="240" height="26"></canvas></div>
+    <div class="row" style="margin-top:8px"><span></span><b id="s_copy" style="cursor:pointer;pointer-events:auto;color:#8fd6ff">copy</b></div>
   </div>
   <div id="banner"></div>
   <div id="hud"><span id="diag" style="display:block;opacity:.65;margin-bottom:3px"></span>drag or arrow-key to look &middot; scroll / pinch / +- to zoom &middot; double-click to reset</div>
@@ -701,7 +714,9 @@ async function poll(){
 
 // ---------- geek stats overplain ----------
 let statsOn=false;
-const HMAX=60, histFps=[], histMb=[];
+const HMAX=60, histFps=[], histMb=[], histLat=[];
+let LAT=0, dqNow=0, dropLast=0, dropRate=0;
+const wcPending=new Map();
 function pushHist(a,v){ a.push(v); if(a.length>HMAX) a.shift(); }
 function spark(cv, arr, stroke, fill){
   const c=cv.getContext('2d'), w=cv.width, h=cv.height;
@@ -719,6 +734,15 @@ function spark(cv, arr, stroke, fill){
 }
 function fmtN(v,d){ return (v===null||v===undefined||isNaN(v))?'-':Number(v).toFixed(d); }
 
+$('s_copy') && ($('s_copy').onclick = (e) => {
+  e.stopPropagation();
+  const rows = [...document.querySelectorAll('#stats .row')].map(r => r.textContent.trim());
+  const txt = 'free60 stats\n' + rows.join('\n') +
+              '\nua: ' + navigator.userAgent;
+  navigator.clipboard && navigator.clipboard.writeText(txt);
+  $('s_copy').textContent = 'copied';
+  setTimeout(()=>{ $('s_copy').textContent='copy'; }, 1200);
+});
 $('statsBtn').onclick = () => {
   statsOn = !statsOn;
   $('stats').style.display = statsOn ? 'block' : 'none';
@@ -746,6 +770,31 @@ function statsTick(){
   } else $('s_buf').textContent = 'empty';
   const q = vid.getVideoPlaybackQuality ? vid.getVideoPlaybackQuality() : null;
   $('s_drop').textContent = q ? (q.droppedVideoFrames+' / '+q.totalVideoFrames) : '-';
+  if(q){
+    const d = q.droppedVideoFrames - dropLast; dropLast = q.droppedVideoFrames;
+    dropRate = dropRate*0.7 + d*0.3;
+    $('s_drops').textContent = dropRate.toFixed(2);
+  } else $('s_drops').textContent = '-';
+
+  // latency, per path
+  if(srcMode==='webcodecs'){
+    dqNow = decoder ? decoder.decodeQueueSize : 0;
+  } else if(srcMode==='fmp4'){
+    dqNow = -1;
+    if(mode==='360' && vid.buffered.length){
+      LAT = (vid.buffered.end(vid.buffered.length-1) - vid.currentTime) * 1000;
+    }
+  } else {
+    dqNow = -1;
+    LAT = performance.now() - lastFrameAt;
+  }
+  $('s_path').textContent = srcMode;
+  $('s_dec').textContent = (srcMode==='webcodecs') ? 'WebCodecs' :
+                           (srcMode==='fmp4') ? 'MediaSource' : 'img/mjpeg';
+  $('s_dq').textContent = (dqNow >= 0) ? dqNow : 'n/a';
+  $('s_lat').textContent = (LAT>0 ? LAT.toFixed(0) : '-') + ' ms';
+  $('s_ff').textContent = j ? (j.ffmpeg ? 'available' : 'absent') : '-';
+  pushHist(histLat, LAT > 0 ? LAT : 0);
   $('s_gen').textContent  = fmp4Gen;
   if(j){
     $('s_subs').textContent = (j.subscribers ?? '-');
@@ -754,6 +803,7 @@ function statsTick(){
   $('s_cv').textContent   = canvas.width+'\u00d7'+canvas.height+' @'+window.devicePixelRatio;
   spark($('g_fps'), histFps, '#4fd1c5', 'rgba(79,209,197,.13)');
   spark($('g_mb'),  histMb,  '#ffb86b', 'rgba(255,184,107,.13)');
+  spark($('g_lat'), histLat, '#c792ea', 'rgba(199,146,234,.13)');
 }
 setInterval(statsTick, 700);
 
@@ -1060,6 +1110,8 @@ async function initStream(){
       wcCtx.drawImage(f,0,0);
       ready=true;
       noteFrame();
+      const tq = wcPending.get(f.timestamp);
+      if(tq !== undefined){ LAT = LAT*0.8 + (performance.now()-tq)*0.2; wcPending.delete(f.timestamp); }
       if(mode==='flat'){ flatwc.width=wcCanvas.width; flatwc.height=wcCanvas.height;
                          flatwcCtx.drawImage(wcCanvas,0,0); }
       f.close();
@@ -1089,9 +1141,12 @@ async function pumpH264(){
       if(buf.length < 4+len) break;
       const au=buf.slice(4,4+len);
       buf=buf.slice(4+len);
+      const stamp = (ts += 33333);
+      wcPending.set(stamp, performance.now());
+      if(wcPending.size > 240) wcPending.clear();
       try{
         decoder.decode(new EncodedVideoChunk({
-          type: isKeyFrame(au)?'key':'delta', timestamp:(ts+=33333), data:au }));
+          type: isKeyFrame(au)?'key':'delta', timestamp:stamp, data:au }));
       }catch(e){ /* not configured yet - drop */ }
     }
   }
@@ -1217,6 +1272,7 @@ class Handler(BaseHTTPRequestHandler):
                 "hw_version": cap.info.get("hw_version"),
                 "fps": round(cap.fps, 1),
                 "mode": cap.mode,
+                "ffmpeg": cap.ffmpeg_ok,
                 "bytes_out": cap.bytes_out,
                 "idle_timeout": cap.idle_timeout,
                 "streaming": cap.streaming,
@@ -1286,6 +1342,10 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 return
         if path == "/stream.mp4":
+            if not cap.ffmpeg_ok:
+                return self._send(503, "text/plain",
+                                  b"ffmpeg not installed: use https (webcodecs) "
+                                  b"or install ffmpeg for the MSE path")
             cap.last_request = time.time()
             q = cap.subscribe("frag")
             self.send_response(200)
@@ -1336,6 +1396,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/live.mp4":
+            if not cap.ffmpeg_ok:
+                return self._send(503, "text/plain",
+                                  b"ffmpeg not installed: use https (webcodecs) "
+                                  b"or install ffmpeg for the mp4 path")
             cap.want_mp4 = time.time()
             # Standard-consumable fragmented MP4: init segment then fragments,
             # verbatim, no framing. /stream.mp4 is length-prefixed because the
@@ -1548,6 +1612,9 @@ def main():
         scheme = "http"
     srv.daemon_threads = True
     print(f"serving on {scheme}://{args.bind}:{args.port}/  mode={args.mode}", flush=True)
+    if not shutil.which("ffmpeg") and args.mode in ("mjpeg", "fmp4"):
+        print("[warn] ffmpeg is not installed, and this mode needs it.", flush=True)
+        print("       --mode auto or webcodecs over https need no ffmpeg.", flush=True)
     if args.mode == "webcodecs" and scheme != "https":
         print("[warn] webcodecs needs a secure context: browsers will show a", flush=True)
         print("       black canvas on http://<lan-ip>. Add --https, or use", flush=True)
