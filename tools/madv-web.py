@@ -121,7 +121,7 @@ class Capture:
                 "-err_detect", "ignore_err", "-fflags", "+genpts",
                 "-r", "30",
                 "-f", "h264", "-i", "pipe:0", "-an"]
-        if self.mode == "fmp4":
+        if self.mode in ("fmp4", "auto"):
             # copy, don't transcode: fragmented MP4 that MediaSource can eat.
             # MSE does not need a secure context, unlike WebCodecs.
             # +default_base_moof is REQUIRED. Without it ffmpeg writes tfhd
