@@ -65,6 +65,7 @@ class Capture:
         self._pending = None
         self.last_request = time.time()
         self.streaming = False
+        self._frame_acc = bytearray()   # multi-chunk frames are assembled here
         self._last_frame_t = 0.0
         self._frame_dt = 0.033      # EMA of the gap between frames
         self.sleep_now = False
@@ -358,6 +359,22 @@ class Capture:
                         self._stop_mp4()
 
                 if fr and fr["data"]:
+                    # Large frames arrive as SEVERAL chunks; [1]==1 marks the
+                    # last one. Publishing a chunk as if it were a whole access
+                    # unit hands WebCodecs a fragment of a frame, which decodes
+                    # to garbage in the bottom rows - H.264 codes macroblocks in
+                    # raster order, so the missing tail is the bottom of the
+                    # picture. fMP4 never showed this because ffmpeg simply
+                    # concatenates the byte stream.
+                    self._frame_acc += fr["data"]
+                    if len(self._frame_acc) > 4 * 1024 * 1024:
+                        self._frame_acc = bytearray(fr["data"])   # sanity reset
+                    if fr.get("last") != 1:
+                        time.sleep(0.002)
+                        continue
+                    data = bytes(self._frame_acc)
+                    self._frame_acc = bytearray()
+
                     now_f = time.time()
                     if self._last_frame_t:
                         dt = now_f - self._last_frame_t
@@ -367,7 +384,7 @@ class Capture:
                     target = ff if ff is not None else self.ff
                     if target is not None:
                         try:
-                            target.stdin.write(fr["data"])
+                            target.stdin.write(data)
                             target.stdin.flush()
                         except (BrokenPipeError, OSError):
                             if target is self.ff:
@@ -375,7 +392,7 @@ class Capture:
                             else:
                                 break
                     if target is None or self.mode == "auto":
-                        self.publish(fr["data"])
+                        self.publish(data)
                     # The next frame is roughly _frame_dt away. Waiting most of
                     # that here means the following poll lands on a frame
                     # instead of bouncing off "busy" first.
