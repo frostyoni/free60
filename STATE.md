@@ -510,6 +510,64 @@ Cost of the two host-side paths on the same stream:
 MJPEG costs 3.5x the bandwidth *and* adds a second lossy generation. That is the
 entire argument for `--mode webcodecs`.
 
+### Full device capability map (from the APK, not guesswork)
+
+The settings menu and the sample gallery pin down exactly what the hardware
+can do. **Photos are the high-resolution output; live view and video are not.**
+
+| Output | Resolutions | Setting | Notes |
+|---|---|---|---|
+| **Photo** | **5376x2688** (14.4 MP) | `photo_res = 3` | the sample gallery image is exactly this |
+| **Photo** | 3840x1920 (7.4 MP) | `photo_res = 4` | the lower option |
+| **Video record** | 1920x960 | `video_res = 9` | same as live view |
+| **Video record** | 1280x640 | `video_res = 10` | |
+| **Live view** | 1920x960 | res id 9 | **the ceiling** — id 11 (3840x1920) silently falls back to 1280x640 |
+| **Live view** | 1280x640 | res id 10 | |
+
+Source: `UI_SettingMenuController` lists `photo_resolution_5376_2688`,
+`photo_resolution_3840_1920`, `video_resolution_1920_960_2_1`,
+`video_resolution_1280_640_2_1`; the bundled `samplegallery.zip` holds one
+`Mini360_Photo.jpg` at **5376x2688**, 4.4 MB, EXIF `Make=MADV Model=FJ01SJPJ`.
+
+**This answers the "photos look better than the stream" question.** A photo is
+5376x2688 = 14.4 MP; the live view is 1920x960 = 1.8 MP. That is a **7.8x pixel
+difference** — the stream is a downscaled preview, the photo is full sensor
+resolution. It is not a quality setting we are missing: `write_all_settings`
+already defaults to `photo_res=3`, the highest. There is no higher live-view
+mode to unlock; id 11 does not exist on this firmware.
+
+**Timelapse recording is a real, unimplemented capability.** The recording
+command's byte `[10]` (which we labelled "fps") is actually a **timelapse
+interval**: the app stores it as `"timelapse"` and maps UI index 0 -> 102,
+1 -> 101 (`C0116b.m1270e`). The menu has a whole "TIME LAPSE RECORDING" screen
+with two interval options. `0` means normal recording. So:
+
+```
+7A 01 03  [8]=0 [9]=video_res [10]=timelapse   # 0=normal, 101/102=interval
+```
+
+**Capture takes only orientation.** `7A 01 05 [8]=orientation` — the photo
+resolution comes from the settings block, not the capture command. So setting
+`photo_res` before capture is the whole of it.
+
+### What we implement vs. what the device can do
+
+| Capability | Device | free60 today |
+|---|---|---|
+| Live view 1920x960 | yes | **yes** |
+| Settings (evb/wb/filter/shutter/logo/res) | yes | **yes** (read + write) |
+| Photo capture trigger | yes | **yes** |
+| Thumbnail (272x272) | yes | **yes** |
+| **Full-res photo download (5376x2688)** | yes | **no** — `7A 05 02` answers busy; capture resets USB on marginal power |
+| Video record | yes | command accepted, **untested end-to-end** |
+| **Timelapse record** | yes | **not exposed** (byte exists, no CLI/UI) |
+| Firmware update | yes | protocol recovered, **never flashed** |
+
+The gap that matters most is the **full-resolution photo download**. Everything
+else is either done or a small exposure job. The photo path is blocked by the
+capture-triggered USB reset (power), not by a missing command — `still-probe.py`
+already does capture -> download in one pass with the correct `photo_res=3`.
+
 ### Thumbnail: WORKING
 
 `7A 05 03` → envelope with `[16:20]` = payload length LE, `[20:]` = JPEG.

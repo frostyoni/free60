@@ -547,11 +547,15 @@ class Camera:
                           rx_len=4096, tx=bytes(pl))
         return p[0] if p else None
 
-    def prepare(self, res=9, bitrate=8, app_version="1.02.34"):
-        """Everything the app does between connect and using the camera."""
+    def prepare(self, res=9, bitrate=8, app_version="1.02.34", photo_res=3):
+        """Everything the app does between connect and using the camera.
+
+        photo_res: 3 = 5376x2688 (14.4 MP, the high setting), 4 = 3840x1920.
+        """
         self.info(app_version=app_version)
         self.clear_picture_buffer()
-        return self.write_all_settings(video_res=res, bitrate=bitrate)
+        return self.write_all_settings(video_res=res, bitrate=bitrate,
+                                       photo_res=photo_res)
 
     def start_stream(self, res=9, app_version="1.02.34", bitrate=8):
         """The app's real startup sequence (C2171b 8732 -> 18519 -> 18449)."""
@@ -596,8 +600,10 @@ class Camera:
     def stop_liveview(self):
         return self._act(0x02, poll=0x02)
 
-    def start_recording(self, res=9, fps=0):
-        return self._act(0x03, {8: 0, 9: res, 10: fps}, poll=0x03)
+    def start_recording(self, res=9, timelapse=0):
+        """Byte [10] is a TIMELAPSE interval, not a frame rate: the app stores
+        it as "timelapse" (0 = normal, 101/102 = the two interval options)."""
+        return self._act(0x03, {8: 0, 9: res, 10: timelapse}, poll=0x03)
 
     def stop_recording(self):
         return self._act(0x04, poll=0x04)
@@ -793,7 +799,7 @@ def cmd_shoot(args):
     with open_transport(args) as t:
         cam = Camera(t)
         cam.open_session()
-        cam.prepare()
+        cam.prepare(photo_res=args.photo_res)
         _say("take picture", cam.take_picture(args.orientation))
         cam.close_session()
 
@@ -804,7 +810,7 @@ def cmd_record(args):
         cam.open_session()
         cam.prepare()
         if args.action == "start":
-            _say("start recording", cam.start_recording(args.res))
+            _say("start recording", cam.start_recording(args.res, args.timelapse))
         else:
             _say("stop recording", cam.stop_recording())
         cam.close_session()
@@ -902,11 +908,15 @@ def main():
 
     p = sub.add_parser("shoot")
     p.add_argument("-O", "--orientation", type=int, default=0)
+    p.add_argument("--photo-res", type=int, default=3, choices=[3, 4],
+                   help="3 = 5376x2688 (14.4 MP), 4 = 3840x1920")
     p.set_defaults(func=cmd_shoot)
 
     p = sub.add_parser("record")
     p.add_argument("action", choices=["start", "stop"])
     p.add_argument("-r", "--res", type=int, default=9)
+    p.add_argument("--timelapse", type=int, default=0,
+                   help="0 = normal; 101/102 = the camera's two timelapse intervals")
     p.set_defaults(func=cmd_record)
 
     sub.add_parser("sleep").set_defaults(func=cmd_sleep)
