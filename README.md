@@ -282,6 +282,30 @@ and no kernel driver will bind it.
 
 ---
 
+## Reporting a problem
+
+Open an issue. What makes one useful:
+
+- **the numbers.** Open the page, press `s`, press **copy** — that puts the
+  whole stats panel on your clipboard including your browser's user agent.
+- `<pybin> tools/madv.py info` — the firmware version matters. Everything here
+  was measured on **v1.1126**.
+- whether it also happens with `--mode fmp4` or `--mode mjpeg`, if you can
+  switch. That single data point separates "the camera" from "the transport".
+
+Two things worth checking before you file it:
+
+- **capture resets the camera and the page goes black for a few seconds** —
+  that is expected on marginal power. Try a powered hub before assuming a bug.
+- **a black page over `http://`** is the secure-context rule, not a fault: use
+  `--https`, or `--mode fmp4`.
+
+The open items above are honest about what does not work. If your problem is
+one of those, an issue saying "also happens here, fw vX" is still worth filing —
+it is how a sample size of one becomes a sample size of many.
+
+---
+
 ## Preservation
 
 `firmware/fw11126.zip` is the camera's own firmware, extracted from
