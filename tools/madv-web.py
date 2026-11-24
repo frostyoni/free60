@@ -21,6 +21,12 @@ import argparse
 import json
 import signal
 import os
+
+# liveview quality (camera settings block). res: 9=1920x960, 10=1280x640, 11=3840x1920
+VIDEO_RES = 9
+VIDEO_BITRATE = 8
+QUALITY_FILE = os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "state", "quality.json")
 import shutil
 import socket as _socket
 import ssl
@@ -66,6 +72,7 @@ class Capture:
         self._pending = None
         self.last_request = time.time()
         self.streaming = False
+        self.reconfig = threading.Event()   # set to re-arm the camera
         self._frame_acc = bytearray()   # multi-chunk frames are assembled here
         self._last_frame_t = 0.0
         self._frame_dt = 0.033      # EMA of the gap between frames
@@ -285,7 +292,7 @@ class Capture:
         info = cam.info(app_version="1.02.34")
         self.info = {"fw_version": info.get("fw_version"),
                      "hw_version": info.get("hw_version")}
-        st = cam.start_stream(res=9)
+        st = cam.start_stream(res=VIDEO_RES, bitrate=VIDEO_BITRATE)
         print(f"[capture] fw={self.info.get('fw_version')} start_stream={st}",
               flush=True)
         self.error = None
@@ -310,6 +317,15 @@ class Capture:
         self.streaming = True          # _session() already started the stream
         try:
             while self.running:
+                if self.reconfig.is_set():
+                    self.reconfig.clear()
+                    print("[capture] reconfiguring: res=%d bitrate=%d"
+                          % (VIDEO_RES, VIDEO_BITRATE), flush=True)
+                    try:
+                        cam.stop_liveview()
+                    except Exception:
+                        pass
+                    return
                 if self._command(cam):
                     continue
 
@@ -321,7 +337,7 @@ class Capture:
                         continue
                     print("[capture] waking", flush=True)
                     cam.open_session()
-                    cam.start_stream(res=9)
+                    cam.start_stream(res=VIDEO_RES, bitrate=VIDEO_BITRATE)
                     self.streaming = True
                     frames_at = self.frames
                     t_fps = time.time()
@@ -441,7 +457,7 @@ class Capture:
                         self.latest_thumb = thumb
                         self.cond.notify_all()
                 self.last_shutter = {"status": st, "at": time.time()}
-                cam.start_stream(res=9)          # re-arm the stream
+                cam.start_stream(res=VIDEO_RES, bitrate=VIDEO_BITRATE)          # re-arm the stream
         except Exception as e:
             self.error = f"command failed: {e}"
         return True
@@ -580,6 +596,14 @@ PAGE = r"""<!doctype html>
 </div>
 
 <div class="bar">
+  <select id="quality" title="stream quality (the camera re-arms on change)"
+          onchange="fetch('/api/quality',{method:'POST',body:this.value})" style="margin-right:6px">
+    <option value='{"res":9,"bitrate":12}'>Best 1920x960 ~9M</option>
+    <option value='{"res":9,"bitrate":8}' selected>High 1920x960 ~7M</option>
+    <option value='{"res":9,"bitrate":4}'>Balanced 1920x960 ~2.7M</option>
+    <option value='{"res":9,"bitrate":2}'>Low 1920x960 ~1.2M</option>
+    <option value='{"res":10,"bitrate":8}'>Phone 1280x640</option>
+  </select>
   <button id="shutter" title="capture writes into the camera; full-resolution download is not implemented, so this cannot give you a usable photo yet">Take picture</button>
   <button id="snap">Save panorama</button>
   <button id="saveview">Save view</button>
@@ -1201,7 +1225,15 @@ function draw(now){
 }
 requestAnimationFrame(draw);
 initStream().catch(e=>console.warn('stream init failed', e));
-</script></body></html>"""
+</script>
+<script>
+fetch('/api/quality').then(r=>r.json()).then(q=>{
+  const s=document.getElementById('quality'); if(!s) return;
+  const v=JSON.stringify({res:q.res,bitrate:q.bitrate});
+  for(const o of s.options){ if(o.value===v){ s.value=o.value; break; } }
+}).catch(()=>{});
+</script>
+</body></html>"""
 
 
 class Server(ThreadingHTTPServer):
@@ -1262,6 +1294,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         cap = self.capture
+
+        if path == "/api/quality":
+            return self._send(200, "application/json",
+                              json.dumps({"res": VIDEO_RES,
+                                          "bitrate": VIDEO_BITRATE}).encode())
 
         if path in ("/", "/index.html"):
             return self._send(200, "text/html; charset=utf-8", PAGE.encode())
@@ -1493,11 +1530,40 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sleep":
             self.capture.sleep_now = True    # one-shot; does not touch the config
             return self._send(200, "application/json", b'{"ok":true}')
+        if path == "/api/quality":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
+            except ValueError:
+                return self._send(400, "text/plain", b"bad json")
+            try:
+                res = int(body.get("res", 9))
+                bitrate = int(body.get("bitrate", 8))
+            except (TypeError, ValueError):
+                return self._send(400, "text/plain", b"bad quality")
+            if res not in (9, 10, 11) or not 1 <= bitrate <= 16:
+                return self._send(400, "text/plain", b"bad quality")
+            set_quality(res, bitrate, persist=True)
+            self.capture.reconfig.set()
+            return self._send(200, "application/json",
+                              b'{"ok":true,"res":%d,"bitrate":%d}' % (res, bitrate))
         if path == "/api/shutter":
             self.capture.last_request = time.time()
             self.capture.request("shutter")
             return self._send(200, "application/json", b'{"ok":true}')
         return self._send(404, "text/plain", b"not found")
+
+
+def set_quality(res, bitrate, persist=False):
+    global VIDEO_RES, VIDEO_BITRATE
+    VIDEO_RES, VIDEO_BITRATE = int(res), int(bitrate)
+    if persist:
+        try:
+            os.makedirs(os.path.dirname(QUALITY_FILE), exist_ok=True)
+            with open(QUALITY_FILE, "w") as f:
+                json.dump({"res": VIDEO_RES, "bitrate": VIDEO_BITRATE}, f)
+        except OSError as e:
+            print("[capture] could not save quality:", e, flush=True)
 
 
 def ensure_cert(bind_addr, certdir):
@@ -1569,6 +1635,10 @@ def main():
     ap.add_argument("--key", help="private key to use with --https")
     ap.add_argument("--cert-dir", default="certs",
                     help="where a generated certificate is kept (default: certs/)")
+    ap.add_argument("--video-res", type=int, default=9,
+                    help="liveview mode: 9=1920x960, 10=1280x640, 11=3840x1920")
+    ap.add_argument("--video-bitrate", type=int, default=8,
+                    help="camera bitrate index 1..8 (8=high, 1=~0.7Mbit/s)")
     ap.add_argument("--scale", type=int, default=1920,
                     help="downscale width for the web preview (0 = native)")
     ap.add_argument("--quality", type=int, default=5)
@@ -1596,6 +1666,17 @@ def main():
     signal.signal(signal.SIGTERM, _on_signal)
 
     srv = Server((args.bind, args.port), Handler)
+
+    global VIDEO_RES, VIDEO_BITRATE
+    VIDEO_RES, VIDEO_BITRATE = args.video_res, args.video_bitrate
+    try:
+        with open(QUALITY_FILE) as f:
+            q = json.load(f)
+        if q.get("res") in (9, 10, 11) and 1 <= int(q.get("bitrate", 8)) <= 16:
+            VIDEO_RES, VIDEO_BITRATE = int(q["res"]), int(q["bitrate"])
+            print("[capture] quality from state:", VIDEO_RES, VIDEO_BITRATE, flush=True)
+    except (OSError, ValueError, TypeError):
+        pass
 
     if args.https or args.cert:
         if args.cert and args.key:
